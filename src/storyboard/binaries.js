@@ -2,7 +2,9 @@
  * binaries.js — 解析 ffmpeg / ffprobe 可执行文件。
  *
  * 优先级：
+ *  0. 宿主托管时由 `useMediaBinaries()` 指定的路径（通办插件入口按 Config 设置）
  *  1. 显式环境变量（DSH_FFMPEG_PATH / FFMPEG_PATH，或 DSH_FFMPEG_DIR）
+ *  1.5 随包分发的二进制：`<包根>/vendor/ffmpeg/<platform>-<arch>/`（安装包打包时放入）
  *  2. DSH 自己的安装目录：$DSH_HOME/tools/ffmpeg/bin、$DSH_HOME/bin
  *  3. DSH 安装根目录下的 tools/ffmpeg/bin、bin（$DSH_HOME 的上一级）
  *  4. 会话工作区下的 tools/ffmpeg/bin（沙箱只放行工作区时的落点）
@@ -20,6 +22,7 @@
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const exeSuffix = (platform) => (platform === 'win32' ? '.exe' : '');
 
@@ -39,7 +42,14 @@ const DENIED = new Set(['EACCES', 'EPERM']);
  * @param {{env?:NodeJS.ProcessEnv, platform?:NodeJS.Platform, cwd?:string}} [opts]
  * @returns {Array<{path:string, source:string, explicit:boolean}>}
  */
-export function mediaCandidates(name, { env = process.env, platform = process.platform, cwd } = {}) {
+/** 随包分发的 ffmpeg 所在目录：`<包根>/vendor/ffmpeg/<platform>-<arch>`。 */
+export function vendoredMediaDir(platform = process.platform, arch = process.arch) {
+  return join(fileURLToPath(new URL('../../vendor/ffmpeg/', import.meta.url)), `${platform}-${arch}`);
+}
+
+export function mediaCandidates(name, {
+  env = process.env, platform = process.platform, arch = process.arch, cwd,
+} = {}) {
   const upper = name.toUpperCase();
   const suffix = exeSuffix(platform);
   const fileName = name + suffix;
@@ -60,6 +70,9 @@ export function mediaCandidates(name, { env = process.env, platform = process.pl
   add(env[`${upper}_PATH`], `env ${upper}_PATH`, true);
   const dir = env[`DSH_${upper}_DIR`];
   if (typeof dir === 'string' && dir !== '') add(join(dir, fileName), `env DSH_${upper}_DIR`);
+
+  const vendored = vendoredMediaDir(platform, arch);
+  add(join(vendored, fileName), `bundled ${vendored}`);
 
   for (const root of roots) {
     add(join(root, 'tools', 'ffmpeg', 'bin', fileName), `${root}/tools/ffmpeg/bin`);
@@ -111,5 +124,24 @@ export function describeMediaSearch(name, opts = {}) {
   return text;
 }
 
-export const DEFAULT_FFMPEG = resolveMediaBinary('ffmpeg') || 'ffmpeg';
-export const DEFAULT_FFPROBE = resolveMediaBinary('ffprobe') || 'ffprobe';
+/**
+ * 默认的 ffmpeg / ffprobe。用 `let` 导出：ESM 的导出是活绑定，各模块参数默认值
+ * `ffmpegPath = DEFAULT_FFMPEG` 在调用时求值，`useMediaBinaries()` 改过之后全部生效。
+ */
+export let DEFAULT_FFMPEG = resolveMediaBinary('ffmpeg') || 'ffmpeg';
+export let DEFAULT_FFPROBE = resolveMediaBinary('ffprobe') || 'ffprobe';
+
+/**
+ * 宿主托管：用宿主给定的路径替换默认的 ffmpeg / ffprobe（只替换给了的那个）。
+ * @param {{ffmpeg?: string, ffprobe?: string}} paths
+ * @returns {() => void} 恢复调用前的值
+ */
+export function useMediaBinaries({ ffmpeg, ffprobe } = {}) {
+  const previous = { ffmpeg: DEFAULT_FFMPEG, ffprobe: DEFAULT_FFPROBE };
+  if (ffmpeg) DEFAULT_FFMPEG = ffmpeg;
+  if (ffprobe) DEFAULT_FFPROBE = ffprobe;
+  return () => {
+    DEFAULT_FFMPEG = previous.ffmpeg;
+    DEFAULT_FFPROBE = previous.ffprobe;
+  };
+}

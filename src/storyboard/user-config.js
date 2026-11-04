@@ -9,6 +9,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { hostRuntime } from './runtime.js';
+
 export function dshHome(env = process.env) {
   return env.DSH_HOME || join(env.USERPROFILE || env.HOME || homedir(), '.dsh');
 }
@@ -19,6 +21,8 @@ export function videoConfigPath(env = process.env) {
 
 /** 坏文件/非对象都按空配置处理；核心不应该因为设置文件损坏而拒绝工作。 */
 export function readVideoFile(env = process.env) {
+  const host = hostRuntime();
+  if (host) return { cacheDir: host.cacheDir, mediaDir: host.mediaDir };
   const path = videoConfigPath(env);
   if (!existsSync(path)) return {};
   try {
