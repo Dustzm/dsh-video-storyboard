@@ -22,10 +22,10 @@
 
 | 改动 | 位置 | 原因 | 能否去掉 |
 |---|---|---|---|
-| 通办入口：插件 `Config`（ffmpeg 路径、缓存目录、语音转写、识图模型），只注册五个工具，不挂设置页 | `src/tongdo/index.js`、`config.js` | 上游靠环境变量和 `$DSH_HOME/video.json`、`asr.json` 配置，并自带本机设置网页；通办统一用插件配置下发，用户不配任何东西 | 不能，通办专用 |
+| 通办入口：插件 `Config`（ffmpeg 路径、缓存目录、语音转写、识图模型及其输出上限 `visionMaxTokens`），只注册五个工具，不挂设置页 | `src/tongdo/index.js`、`config.js` | 上游靠环境变量和 `$DSH_HOME/video.json`、`asr.json` 配置，并自带本机设置网页；通办统一用插件配置下发，用户不配任何东西 | 不能，通办专用 |
 | 精简的工具定义：去掉链接、cookies、清晰度、OCR、档位微调等参数，描述改为“用户丢进来的视频文件”；分镜描述说明格子按时间采样、可能跨切点，文字索引是时间与切点的权威结果，不要自己用 shell 重新抽帧或 OCR | `src/tongdo/tool-spec.js` | 参数说明每轮都发给模型；产品不开放链接下载，也不让模型去调底层旋钮；“一镜一帧”的旧说法会让模型怀疑索引、自己去抽帧核对 | 不能，通办专用 |
 | 只接受本地文件：链接输入直接拒绝并提示用户下载后附上，拒收说明里叮嘱不要用别的工具下载；`input` 说明与 probe、storyboard 的描述写明链接会被拒收，引导模型把链接交给工具、转告拒收说明，而不是自己用 shell 或网页工具下载 | `src/tongdo/index.js` 的 `localOnly`、`src/tongdo/tool-spec.js` | 链接下载依赖用户自装 yt-dlp 与 cookies，且有合规风险；不写进描述时模型拿不到拒收说明，会自己去下载 | 产品开放链接时去掉 |
-| 纯文本模型降级：当前模型看不到图片时，请同一路由（或配置指定）的识图模型逐格描述分镜图，追加到工具结果 | `src/tongdo/vision.js` | 宿主会把发给纯文本模型的图片换成占位文字，模型只剩时间索引 | 宿主提供通用的“代看图”机制后可去掉 |
+| 纯文本模型降级：当前模型看不到图片时，依次请候选识图模型（配置指定且核对过能收图的、同一路由自动挑选的）描述图片，第一个写出描述的为准，追加到工具结果。代看请求用该模型最低的推理档位（没声明档位时不传），输出上限取 min(`visionMaxTokens`, 512 + 128×格数)，只把清单首行与 `cell N =` 行发给识图模型（匹配不到时发全文）；空描述判失败，部分描述被截断时保留并注明。分镜与放大图逐格描述，字幕条拼图逐条照抄字幕。全部候选失败时，失败说明放在结果最前面、写成终止性措辞（不许用 shell 或 OCR 抽帧，立刻回复用户），并删掉“sheet already in context”那一行；结果仍为成功，图片与文字索引照常有效。查不到当前模型信息时按能看图处理 | `src/tongdo/vision.js`；`src/storyboard/format.js` 导出 `SHEET_IN_CONTEXT_LINE` | 宿主会把发给纯文本模型的图片换成占位文字，模型只剩时间索引；思考会吃掉输出预算、空描述曾被当成成功，失败说明放在末尾时模型会自己去 OCR | 宿主提供通用的“代看图”机制后可去掉 |
 | 宿主托管的运行时设置 `configureHostRuntime()`：缓存目录、语音转写配置；托管时不读用户配置文件与 `DSH_ASR_*` 环境变量 | 新增 `src/storyboard/runtime.js`；挂钩 `user-config.js` 的 `readVideoFile`、`asr.js` 的 `resolveAsrConfig` | 缓存默认在 `~/.cache`、`/tmp`，不符合通办“数据目录隔离”；转写配置要由宿主下发 | 不能，通办专用 |
 | 宿主托管时的台词说明：没有转写服务时给模型中性说明，不再出现“装 sherpa-onnx、导 B 站 cookie、看 docs/SETUP”这类安装指引；也不写“Work from the frames”，免得和代看失败时“画面没看到”的说明互相矛盾 | `src/storyboard/format.js`（`HOST_NO_TRANSCRIPTION*` 与三处 `hostRuntime()` 分支） | 产品用户不配置也不该被要求配置；只在托管时生效 | 不能，通办专用 |
 | 清单的证据文件一行改为只在真写过证据文件（`result.evidencePath`，CLI 的 `saveStoryboards` 会设置）时输出，并写出真实路径 | `src/storyboard/format.js` 的 `formatManifest` | 插件路径不写证据文件，原来那行固定的 `<name>.evidence.json` 会让模型满盘去找 | 上游修正后可去掉（可反馈给上游） |

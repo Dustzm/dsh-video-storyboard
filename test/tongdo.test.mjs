@@ -17,7 +17,10 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import * as plugin from '../src/tongdo/index.js';
 import { resolveConfig } from '../src/tongdo/config.js';
 import { locateSpec, probeSpec, storyboardSpec, subtitlesSpec, zoomSpec } from '../src/tongdo/tool-spec.js';
-import { withDescriptionsForTextModel } from '../src/tongdo/vision.js';
+import {
+  STORYBOARD_PROFILE, SUBTITLE_PROFILE, describeBudget, withDescriptionsForTextModel,
+} from '../src/tongdo/vision.js';
+import { SHEET_IN_CONTEXT_LINE } from '../src/storyboard/format.js';
 import { hostRuntime } from '../src/storyboard/runtime.js';
 import { resolveAsrConfig } from '../src/storyboard/asr.js';
 import { DEFAULT_FFMPEG } from '../src/storyboard/binaries.js';
@@ -97,6 +100,12 @@ test('tongdo config: 默认缓存在数据目录下，转写地址带凭据时�
     assert.throws(() => resolveConfig({ visionModel: { provider: 'p' } }), /both provider and model/);
     assert.throws(() => resolveConfig({ transcription: { baseUrl: 'https://u:p@asr.example/v1', model: 'm' } }), /without credentials/);
     assert.throws(() => resolveConfig({ transcription: { baseUrl: 'not a url', model: 'm' } }), /absolute URL/);
+    assert.equal(resolved.visionMaxTokens, 8192);
+    assert.equal(parsed.visionMaxTokens, 8192);
+    assert.equal(resolveConfig({ visionMaxTokens: 2048 }).visionMaxTokens, 2048);
+    assert.throws(() => plugin.Config({ visionMaxTokens: 100 }));
+    assert.throws(() => resolveConfig({ visionMaxTokens: 1500.5 }), /visionMaxTokens must be an integer in \[1024, 65536\]/);
+    assert.throws(() => resolveConfig({ visionMaxTokens: 70000 }), /visionMaxTokens/);
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME;
     else process.env.DSH_HOME = previous;
@@ -127,61 +136,208 @@ test('tongdo apply: 注册五个工具、托管运行时；dispose 全部撤销'
   assert.equal(DEFAULT_FFMPEG, before);
 });
 
-/** 纯文本降级用的假 llm：记录 stream 调用。 */
-function fakeLlm({ modalities, catalog = [], reply = 'cell 1: a test card', fail = null }) {
+/** 识图模型的默认信息：收图，推理档位从低到高。 */
+const EYES_INFO = { inputModalities: ['text', 'image'], reasoning: { efforts: [{ id: 'off' }, { id: 'high' }] } };
+
+/**
+ * 纯文本降级用的假 llm：记录 stream 调用。
+ * - `modalities`：当前模型（p/text-model）的输入模态；`currentError` 让查当前模型抛错
+ * - `info`：按 `provider/model` 给其他模型的信息，值为 Error 时抛出；没给的按 EYES_INFO
+ * - `catalog`、`listError`：listModels 的返回或抛出
+ * - `reply`、`finishKind`、`fail`：stream 的默认行为；`replies` 按模型名覆盖
+ */
+function fakeLlm({
+  modalities, currentError = null, info = {}, catalog = [], listError = null,
+  reply = 'cell 1: a test card', finishKind = 'stop', fail = null, replies = {},
+}) {
   const calls = [];
   return {
     calls,
-    async resolveModelInfo() { return modalities === undefined ? {} : { inputModalities: modalities }; },
-    async listModels() { return catalog; },
+    async resolveModelInfo(provider, model) {
+      if (provider === 'p' && model === 'text-model') {
+        if (currentError) throw currentError;
+        return modalities === undefined ? {} : { inputModalities: modalities };
+      }
+      const found = info[`${provider}/${model}`] ?? EYES_INFO;
+      if (found instanceof Error) throw found;
+      return found;
+    },
+    async listModels() {
+      if (listError) throw listError;
+      return catalog;
+    },
     async* stream(options) {
       calls.push(options);
-      if (fail) {
-        yield { type: 'finish', reason: { kind: 'error', failure: { message: fail } } };
+      const behaviour = { reply, finishKind, fail, ...replies[options.model] };
+      if (behaviour.fail) {
+        yield { type: 'finish', reason: { kind: 'error', failure: { message: behaviour.fail } } };
         return;
       }
-      yield { type: 'text-delta', index: 0, text: reply };
-      yield { type: 'finish', reason: { kind: 'stop' } };
+      if (behaviour.reply) yield { type: 'text-delta', index: 0, text: behaviour.reply };
+      yield { type: 'finish', reason: { kind: behaviour.finishKind } };
     },
   };
 }
 
+/** 记录告警的 logger。 */
+function fakeLogger() {
+  const warnings = [];
+  return { warnings, warn: (message) => warnings.push(message), error() {} };
+}
+
 const EXEC = { agent: { session: { requestHeader: () => ({ config: { provider: 'p', model: 'text-model' } }) } } };
 const VALUE = { text: 'cell 1 = 00:00-00:05', images: [{ attachmentId: 'sha256:abc' }] };
+const ENV = { exec: EXEC, visionModel: null, maxTokens: 8192 };
+const EYES_CATALOG = [{ id: 'text-model' }, { id: 'eyes', inputModalities: ['text', 'image'] }];
+/** 带首行、计划行与三格的清单，末尾是“图已在上下文里”那一行。 */
+const MANIFEST = [
+  '<storyboard input="clip.mp4" duration="00:12.00">',
+  'plan: 3 cells, k=2',
+  'cost: ~600 vision tokens',
+  'cell 1 = 00:00.00-00:04.00',
+  '    "hello"',
+  'cell 2 (image 2) = 00:04.00-00:08.00  cuts 1',
+  'cell 3 = 00:08.00-00:12.00',
+  '</storyboard>',
+  SHEET_IN_CONTEXT_LINE,
+].join('\n');
+const MANIFEST_VALUE = { text: MANIFEST, images: VALUE.images };
 
-test('vision: 当前模型能看图或模态未知时原样返回', async () => {
+test('vision: 当前模型能看图、模态未知或查不到当前模型时原样返回', async () => {
   for (const modalities of [['text', 'image'], undefined]) {
     const llm = fakeLlm({ modalities });
-    assert.deepEqual(await withDescriptionsForTextModel({ llm, exec: EXEC, visionModel: null }, VALUE), VALUE);
+    assert.deepEqual(await withDescriptionsForTextModel({ ...ENV, llm }, VALUE), VALUE);
     assert.equal(llm.calls.length, 0);
   }
-  assert.deepEqual(await withDescriptionsForTextModel({ llm: null, exec: EXEC, visionModel: null }, VALUE), VALUE);
+  assert.deepEqual(await withDescriptionsForTextModel({ ...ENV, llm: null }, VALUE), VALUE);
+  const unknown = fakeLlm({ currentError: new Error('provider "p" is not registered'), catalog: EYES_CATALOG });
+  assert.deepEqual(await withDescriptionsForTextModel({ ...ENV, llm: unknown }, VALUE), VALUE);
+  assert.equal(unknown.calls.length, 0);
 });
 
 test('vision: 纯文本模型时由同路由的识图模型逐格描述，图片块保留', async () => {
-  const llm = fakeLlm({ modalities: ['text'], catalog: [{ id: 'text-model' }, { id: 'eyes', inputModalities: ['text', 'image'] }] });
-  const out = await withDescriptionsForTextModel({ llm, exec: EXEC, visionModel: null }, VALUE);
+  const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG });
+  const out = await withDescriptionsForTextModel({ ...ENV, llm }, VALUE);
   assert.equal(llm.calls.length, 1);
   assert.equal(llm.calls[0].model, 'eyes');
   assert.equal(llm.calls[0].provider, 'p');
   assert.deepEqual(llm.calls[0].messages[0].content.filter((b) => b.type === 'image').map((b) => b.attachment), VALUE.images);
   assert.deepEqual(out.images, VALUE.images);
   assert.match(out.text, /<frames-described-by model="eyes">[\s\S]*cell 1: a test card/);
+  assert.match(out.text, /cite cells by number/);
 });
 
-test('vision: 配置的识图模型优先；没有可用识图模型或调用失败时让模型如实说明', async () => {
-  const configured = fakeLlm({ modalities: ['text'], catalog: [{ id: 'eyes', inputModalities: ['image'] }] });
-  await withDescriptionsForTextModel({ llm: configured, exec: EXEC, visionModel: { provider: 'q', model: 'pinned' } }, VALUE);
-  assert.deepEqual([configured.calls[0].provider, configured.calls[0].model], ['q', 'pinned']);
+test('vision: 代看用识图模型最低的推理档位，输出上限按格数计算', async () => {
+  const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG });
+  await withDescriptionsForTextModel({ ...ENV, llm }, MANIFEST_VALUE);
+  assert.equal(llm.calls[0].reasoningEffort, 'off');
+  assert.equal(llm.calls[0].maxTokens, 512 + 128 * 3);
+  assert.equal(describeBudget(100, 8192), 8192, '格子多时封顶到配置的上限');
 
-  const none = await withDescriptionsForTextModel({ llm: fakeLlm({ modalities: ['text'], catalog: [{ id: 'x' }] }), exec: EXEC, visionModel: null }, VALUE);
-  assert.match(none.text, /<frames-unavailable>[\s\S]*apologise/);
+  const plain = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, info: { 'p/eyes': { inputModalities: ['image'] } } });
+  await withDescriptionsForTextModel({ ...ENV, llm: plain }, VALUE);
+  assert.ok(!('reasoningEffort' in plain.calls[0]), '模型没声明推理档位时不传，保持厂商默认');
+});
 
-  const failed = await withDescriptionsForTextModel({
-    llm: fakeLlm({ modalities: ['text'], catalog: [{ id: 'eyes', inputModalities: ['image'] }], fail: 'quota' }),
-    exec: EXEC, visionModel: null,
-  }, VALUE);
-  assert.match(failed.text, /<frames-unavailable>[\s\S]*quota/);
+test('vision: 发给识图模型的索引只有首行与格子行；匹配不到格子行时退回全文', async () => {
+  const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG });
+  await withDescriptionsForTextModel({ ...ENV, llm }, MANIFEST_VALUE);
+  const sent = llm.calls[0].messages[0].content[0].text;
+  assert.ok(sent.startsWith(STORYBOARD_PROFILE.prompt));
+  const index = sent.slice(STORYBOARD_PROFILE.prompt.length + 1).split('\n');
+  assert.deepEqual(index, [
+    '<storyboard input="clip.mp4" duration="00:12.00">',
+    'cell 1 = 00:00.00-00:04.00',
+    'cell 2 (image 2) = 00:04.00-00:08.00  cuts 1',
+    'cell 3 = 00:08.00-00:12.00',
+  ]);
+
+  const odd = { text: 'frames: 00:00 00:05', images: VALUE.images };
+  const fallback = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG });
+  await withDescriptionsForTextModel({ ...ENV, llm: fallback }, odd);
+  assert.ok(fallback.calls[0].messages[0].content[0].text.endsWith(`\n${odd.text}`));
+  assert.equal(fallback.calls[0].maxTokens, 512 + 128 * 16, '数不出格子时按每张图 16 格估算');
+});
+
+test('vision: 空描述（含只写到上限、只有空白）判失败，部分描述被截断时保留并注明', async () => {
+  for (const [reply, finishKind] of [['', 'max-tokens'], ['   ', 'stop']]) {
+    const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, reply, finishKind });
+    const out = await withDescriptionsForTextModel({ ...ENV, llm }, VALUE);
+    assert.doesNotMatch(out.text, /<frames-described-by/);
+    assert.match(out.text, /^<frames-unavailable>/);
+  }
+  const partial = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, reply: 'cell 1: x', finishKind: 'max-tokens' });
+  const out = await withDescriptionsForTextModel({ ...ENV, llm: partial }, VALUE);
+  assert.match(out.text, /<frames-described-by[\s\S]*cell 1: x[\s\S]*stopped at the output limit: cells after/);
+});
+
+test('vision: 配置的识图模型不收图时告警，退到自动挑选的模型', async () => {
+  const logger = fakeLogger();
+  const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, info: { 'q/pinned': { inputModalities: ['text'] } } });
+  const out = await withDescriptionsForTextModel({ ...ENV, llm, logger, visionModel: { provider: 'q', model: 'pinned' } }, VALUE);
+  assert.equal(logger.warnings.length, 1);
+  assert.match(logger.warnings[0], /visionModel q\/pinned cannot take images/);
+  assert.deepEqual(llm.calls.map((call) => call.model), ['eyes']);
+  assert.match(out.text, /<frames-described-by model="eyes">/);
+});
+
+test('vision: 配置的识图模型优先；调用失败时用自动挑选的模型重试', async () => {
+  const pinned = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG });
+  await withDescriptionsForTextModel({ ...ENV, llm: pinned, visionModel: { provider: 'q', model: 'pinned' } }, VALUE);
+  assert.deepEqual(pinned.calls.map((call) => [call.provider, call.model]), [['q', 'pinned']]);
+
+  const retry = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, replies: { pinned: { fail: 'quota' } } });
+  const out = await withDescriptionsForTextModel({ ...ENV, llm: retry, visionModel: { provider: 'q', model: 'pinned' } }, VALUE);
+  assert.deepEqual(retry.calls.map((call) => call.model), ['pinned', 'eyes']);
+  assert.match(out.text, /<frames-described-by model="eyes">/);
+});
+
+test('vision: 配置的模型就是自动挑选的那个时只请求一次', async () => {
+  const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, fail: 'overloaded' });
+  const out = await withDescriptionsForTextModel({ ...ENV, llm, visionModel: { provider: 'p', model: 'eyes' } }, VALUE);
+  assert.equal(llm.calls.length, 1);
+  assert.match(out.text, /^<frames-unavailable>/);
+});
+
+test('vision: 全部候选失败时说明放最前、写成终止性措辞，去掉“图已在上下文里”', async () => {
+  const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, replies: { pinned: { fail: 'quota' }, eyes: { fail: 'overloaded' } } });
+  const out = await withDescriptionsForTextModel({ ...ENV, llm, visionModel: { provider: 'q', model: 'pinned' } }, MANIFEST_VALUE);
+  assert.match(out.text, /^<frames-unavailable>/);
+  assert.match(out.text, /Do not try to extract/);
+  assert.match(out.text, /pinned: quota/);
+  assert.match(out.text, /eyes: overloaded/);
+  assert.ok(!out.text.includes(SHEET_IN_CONTEXT_LINE));
+  assert.doesNotMatch(out.text, /this time/);
+  assert.ok(out.text.includes('cell 3 = 00:08.00-00:12.00'), '文字索引照常保留');
+  assert.deepEqual(out.images, VALUE.images);
+});
+
+test('vision: 列目录失败且没配识图模型时给出失败说明；配了能收图的模型时照常代看', async () => {
+  const listError = Object.assign(new Error('catalog is invalid'), { code: 'INVALID_CATALOG' });
+  const none = fakeLlm({ modalities: ['text'], listError });
+  const out = await withDescriptionsForTextModel({ ...ENV, llm: none }, MANIFEST_VALUE);
+  assert.match(out.text, /^<frames-unavailable>[^<]*no image-capable model is available/);
+  assert.ok(!out.text.includes(SHEET_IN_CONTEXT_LINE));
+  assert.equal(none.calls.length, 0);
+
+  const pinned = fakeLlm({ modalities: ['text'], listError });
+  const described = await withDescriptionsForTextModel({ ...ENV, llm: pinned, visionModel: { provider: 'q', model: 'pinned' } }, VALUE);
+  assert.match(described.text, /<frames-described-by model="pinned">/);
+});
+
+test('vision: 字幕条用逐条抄写的提示词，输出上限按条数计算', async () => {
+  const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, reply: 'strip 1: 你好' });
+  const value = {
+    text: 'subtitle strip: 5 strips, top to bottom, ~2.0s apart · 00:00.00–00:10.00 · band = bottom\ntimeline: 00:00.00 00:02.00',
+    images: VALUE.images,
+  };
+  const out = await withDescriptionsForTextModel({ ...ENV, llm }, value, SUBTITLE_PROFILE);
+  const sent = llm.calls[0].messages[0].content[0].text;
+  assert.match(sent, /strip i/);
+  assert.doesNotMatch(sent, /every cell carries a burned-in number/);
+  assert.ok(sent.endsWith(value.text));
+  assert.equal(llm.calls[0].maxTokens, 512 + 128 * 5);
+  assert.match(out.text, /cite strips by time[\s\S]*strip 1: 你好/);
 });
 
 /** 造测试视频要 lavfi 输入与视频编码器，随包的精简 LGPL 构建没有，所以用 PATH 上的完整 ffmpeg。 */
@@ -205,7 +361,15 @@ test('tongdo e2e: 本地视频出分镜图，台词说明不含安装指引', as
       '-f', 'lavfi', '-i', 'sine=f=440:d=8',
       '-filter_complex', '[0][1]concat=n=2:v=1:a=0[v]', '-map', '[v]', '-map', '2', '-shortest', clip,
     ]);
-    const { ctx, registered, saved } = fakeContext();
+    // 代看用的 llm 可在用例中途替换：先让识图模型全部失败，再让它正常描述。
+    let llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, fail: 'overloaded' });
+    const { ctx, registered, saved } = fakeContext({
+      llm: {
+        resolveModelInfo: (...args) => llm.resolveModelInfo(...args),
+        listModels: (...args) => llm.listModels(...args),
+        stream: (options) => llm.stream(options),
+      },
+    });
     const dispose = await plugin.apply(ctx, { dataDir: join(dir, 'cache') });
     try {
       const value = await registered.get('video_storyboard').execute({ input: clip }, {});
@@ -215,10 +379,25 @@ test('tongdo e2e: 本地视频出分镜图，台词说明不含安装指引', as
       assert.doesNotMatch(value.text, /sherpa|cookie|docs\/|asr\.json|告诉用户/i);
       assert.doesNotMatch(value.text, /evidence\.json/, '插件不写证据文件，清单里不该提它');
       assert.doesNotMatch(value.text, /Work from the frames/);
+      assert.ok(value.text.includes(SHEET_IN_CONTEXT_LINE));
 
       const probed = await registered.get('video_probe').execute({ input: clip }, {});
       assert.match(probed.text, /duration="8/);
       assert.doesNotMatch(probed.text, /docs\/|SETUP/);
+
+      // 纯文本模型 + 识图模型失败：经 apply 之后的结果同样满足失败说明的约定
+      const unseen = await registered.get('video_storyboard').execute({ input: clip }, EXEC);
+      assert.match(unseen.text, /^<frames-unavailable>[\s\S]*Do not try to extract/);
+      assert.ok(!unseen.text.includes(SHEET_IN_CONTEXT_LINE));
+      assert.doesNotMatch(unseen.text, /this time/);
+      assert.ok(unseen.images.length >= 1);
+
+      // 字幕条用字幕提示词代看
+      llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, reply: 'strip 1: (blank)' });
+      const strips = await registered.get('video_subtitles').execute({ input: clip }, EXEC);
+      assert.equal(llm.calls.length, 1);
+      assert.ok(llm.calls[0].messages[0].content[0].text.startsWith(SUBTITLE_PROFILE.prompt));
+      assert.match(strips.text, /<frames-described-by model="eyes">[\s\S]*strip 1: \(blank\)/);
     } finally {
       dispose();
     }

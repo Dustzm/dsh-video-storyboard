@@ -22,7 +22,7 @@ import * as subtitles from '../tools/subtitles.js';
 import * as zoom from '../tools/zoom.js';
 import { Config, resolveConfig } from './config.js';
 import { locateSpec, probeSpec, storyboardSpec, subtitlesSpec, zoomSpec } from './tool-spec.js';
-import { withDescriptionsForTextModel } from './vision.js';
+import { STORYBOARD_PROFILE, SUBTITLE_PROFILE, withDescriptionsForTextModel } from './vision.js';
 
 export { Config };
 
@@ -60,16 +60,19 @@ export async function apply(ctx, config) {
     }),
   ];
 
-  /** 出图的工具：结果交给纯文本降级处理。 */
-  const visual = (spec, run) => defineTool({
+  /** 出图的工具：结果交给纯文本降级处理，`profile` 决定识图模型怎么描述这类图。 */
+  const visual = (spec, run, profile) => defineTool({
     ...spec,
     async execute(args, exec) {
       localOnly(args);
       const value = await run(ctx, args);
-      return withDescriptionsForTextModel(
-        { llm: serviceOf(ctx, 'llm'), exec, visionModel: resolved.visionModel },
-        value,
-      );
+      return withDescriptionsForTextModel({
+        llm: serviceOf(ctx, 'llm'),
+        exec,
+        visionModel: resolved.visionModel,
+        maxTokens: resolved.visionMaxTokens,
+        logger: ctx.logger,
+      }, value, profile);
     },
   });
   /** 只出文字的工具。 */
@@ -83,10 +86,10 @@ export async function apply(ctx, config) {
 
   const tools = [
     textual(probeSpec(), probe.execute),
-    visual(storyboardSpec(), storyboard.execute),
-    visual(zoomSpec(), zoom.execute),
+    visual(storyboardSpec(), storyboard.execute, STORYBOARD_PROFILE),
+    visual(zoomSpec(), zoom.execute, STORYBOARD_PROFILE),
     textual(locateSpec(), locate.execute),
-    visual(subtitlesSpec(), subtitles.execute),
+    visual(subtitlesSpec(), subtitles.execute, SUBTITLE_PROFILE),
   ];
   for (const tool of tools) disposers.push(ctx.tools.register(tool));
 
