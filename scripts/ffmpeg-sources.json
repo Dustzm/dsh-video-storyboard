@@ -1,0 +1,10 @@
+{
+  "$comment": "随包分发的 LGPL 版 ffmpeg：由 .github/workflows/ffmpeg.yml 构建并发布到 release；sha256 取自该 Release 的 SHA256SUMS。为空的目标在打包时报错。",
+  "version": "8.0.1",
+  "release": "https://github.com/Dustzm/dsh-video-storyboard/releases/download/ffmpeg-8.0.1-tongdo.1",
+  "sha256": {
+    "darwin-arm64": "",
+    "darwin-x64": "",
+    "win32-x64": ""
+  }
+}

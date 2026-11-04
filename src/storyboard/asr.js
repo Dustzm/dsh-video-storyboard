@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { DEFAULT_FFMPEG } from './probe.js';
+import { hostRuntime } from './runtime.js';
 
 const run = promisify(execFile);
 
@@ -107,6 +108,8 @@ export function canTranscribe(cfg = ASR_DEFAULTS, apiKey) {
 }
 
 export function resolveAsrConfig(env = process.env) {
+  const host = hostRuntime();
+  if (host) return hostAsrConfig(host.transcription);
   // **按文件 mtime 记忆**：asr.json 是"跟模型聊天时顺手改、想立刻生效"的文件。
   // 原来 ASR_DEFAULTS 是模块加载时的一次快照，改完必须重启整个宿主才认 ——
   // 实测有用户被这个坑到（"asr.json 改完得完整重启才生效"，2026-10-30 反馈）。
@@ -139,6 +142,23 @@ export function resolveAsrConfig(env = process.env) {
   asrMemo = resolved;
   asrMemoStamp = stamp;
   return resolved;
+}
+
+/**
+ * 宿主托管时的 ASR 配置：只看宿主下发的 transcription，不读 asr.json 与 DSH_ASR_* 环境变量。
+ * 没有配置转写时 `enabled: false`，转写一律跳过。
+ */
+function hostAsrConfig(transcription) {
+  return {
+    enabled: transcription !== null,
+    baseUrl: transcription?.baseUrl ?? '',
+    model: transcription?.model ?? '',
+    keyEnv: '',
+    language: transcription?.language ?? 'zh',
+    ...(transcription?.apiKey ? { fileKey: transcription.apiKey } : {}),
+    source: 'host',
+    hotwords: '',
+  };
 }
 
 let asrMemo = null;

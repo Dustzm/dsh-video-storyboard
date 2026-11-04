@@ -1,0 +1,77 @@
+# 构建随通办安装包分发的 LGPL 版 ffmpeg / ffprobe，发布到本仓库的 Release（通办衍生）。
+#
+# 手动触发：填 Release 标签（如 ffmpeg-8.0.1-tongdo.1）。三个目标并行构建，产物与 SHA256SUMS、对应源码
+# 一起挂到该 Release；之后把各归档的地址与 sha256 写进 scripts/ffmpeg-sources.json。
+name: ffmpeg
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release 标签，如 ffmpeg-8.0.1-tongdo.1
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+          - target: darwin-x64
+            runner: macos-15-intel
+          - target: win32-x64
+            runner: ubuntu-24.04
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: toolchain (macOS)
+        if: runner.os == 'macOS'
+        run: brew install meson ninja nasm pkg-config
+
+      - name: toolchain (mingw)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc-mingw-w64-x86-64 libz-mingw-w64-dev nasm pkg-config meson ninja-build
+
+      - name: build
+        run: scripts/build-ffmpeg.sh ${{ matrix.target }} out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-${{ matrix.target }}
+          path: out/ffmpeg-*-${{ matrix.target }}.tar.xz
+
+      # 源码包三个目标相同，只从 macOS arm64 那一份上传
+      - uses: actions/upload-artifact@v4
+        if: matrix.target == 'darwin-arm64'
+        with:
+          name: ffmpeg-source
+          path: out/ffmpeg-*-source.tar.xz
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: cd dist && sha256sum ffmpeg-*.tar.xz > SHA256SUMS && cat SHA256SUMS
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ inputs.tag }}" dist/* \
+            --repo "${{ github.repository }}" --target "${{ github.sha }}" \
+            --title "${{ inputs.tag }}" \
+            --notes "LGPL-2.1-or-later FFmpeg (ffmpeg, ffprobe) bundled with Tongdo's video plugin. Built by scripts/build-ffmpeg.sh at ${{ github.sha }}; corresponding source in ffmpeg-*-source.tar.xz."

@@ -19,6 +19,18 @@ import {
   AUTO_CANDIDATES, DEFAULT_STRATEGY, autoSheetCap, fitCanvas, imageTokens, pickAutoStrategy,
   readabilityOf,
 } from './tiers.js';
+import { hostRuntime } from './runtime.js';
+
+/**
+ * 宿主托管、且宿主没有配置语音转写时的说明。上游那几条“去装 ASR / 导 cookie”的提示
+ * 对产品用户没有意义：他们不配置任何东西，也不该被要求去配置。
+ */
+const HOST_NO_TRANSCRIPTION = 'transcript: not available — speech-to-text is not enabled in this environment, so the '
+  + 'dialogue was NOT transcribed (this is NOT "no speech"). Work from the frames, on-screen text and the audio strip. '
+  + 'If the user supplied a subtitle or transcript file (.srt or .json), pass it as transcriptFile. When the '
+  + 'answer depends on what is said, tell the user plainly that spoken content is not covered.';
+const HOST_NO_TRANSCRIPTION_PROBE = 'no subtitle track and speech-to-text is not enabled here: the dialogue will not be '
+  + 'transcribed; storyboards cover pictures, on-screen text and loudness only.';
 
 /** 三档台词预算（字符）：low 只判断"这段在讲什么"，high 要能引用原话。定义在 board.js，这里转出。 */
 export { DETAIL_CHARS };
@@ -239,7 +251,9 @@ export async function formatProbe(info) {
   else if (!info.hasSubtitle) lines.push('no subtitle track: transcript (if any) must come from ASR.');
   // 有内嵌字幕轨就不用 ASR（免费又最准），没音轨更没得转 —— 这两种情况都不必提 ASR 能不能跑。
   const asrCfg = resolveAsrConfig();
-  if (info.hasAudio && !info.hasSubtitle && !canTranscribe(asrCfg)) {
+  if (info.hasAudio && !info.hasSubtitle && !canTranscribe(asrCfg) && hostRuntime()) {
+    lines.push(HOST_NO_TRANSCRIPTION_PROBE);
+  } else if (info.hasAudio && !info.hasSubtitle && !canTranscribe(asrCfg)) {
     lines.push(`transcription is OFF: this ASR backend needs a key and none is configured ` +
       `(baseUrl ${asrCfg.baseUrl}). The storyboard will label the transcript as NOT attempted ` +
       'instead of claiming the video has no speech. Set the key (docs/SETUP.zh.md), point baseUrl at a ' +
@@ -1021,12 +1035,17 @@ export function formatManifest(result, {
         'transcript is ASR only.');
     }
   }
-  if (result.transcript?.source === 'asr-failed') {
+  if (result.transcript?.source === 'asr-failed' && hostRuntime()) {
+    lines.push(`transcript unavailable: the speech-to-text service failed (${result.transcript.error ?? 'unknown error'}). ` +
+      'This is NOT "no speech" and the frames are unaffected; tell the user the dialogue could not be transcribed this time.');
+  } else if (result.transcript?.source === 'asr-failed') {
     lines.push(`transcript unavailable: ${result.transcript.error ?? 'ASR call failed'}`);
     lines.push('  → 告诉用户：听音服务连不上（装了但没启动，或地址/端口不对），'
       + '不是这条片子没人说话 —— 起一下本机服务就好。');
   }
-  if (result.transcript?.source === 'no-key') {
+  if (result.transcript?.source === 'no-key' && hostRuntime()) {
+    lines.push(HOST_NO_TRANSCRIPTION);
+  } else if (result.transcript?.source === 'no-key') {
     lines.push(`transcript: NOT attempted — this ASR backend needs a key and none is configured, so ` +
       'nothing was listened to. This is neither "no dialogue" nor a subtitle-track failure. Set the key ' +
       '(docs/SETUP.zh.md), point baseUrl at a local service (no key needed), or pass transcriptFile / use ' +
