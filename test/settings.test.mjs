@@ -1,3 +1,8 @@
+/**
+ * settings.test.mjs — 上游设置页的测试：读写层、本机设置服务、DSH 设置 tab 的客户端 bundle。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
+ */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';

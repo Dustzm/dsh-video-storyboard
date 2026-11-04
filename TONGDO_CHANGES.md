@@ -15,6 +15,7 @@
 ## 原则
 
 - **改动集中**：通办的入口、配置、工具定义、纯文本模型降级都在新增目录 `src/tongdo/`；对上游文件只做少量挂钩，便于整版合并。
+- **改上游文件要带修改声明**：被改过的上游源码文件在文件头注释末尾加一行 `Modified by Tongdo; see TONGDO_CHANGES.md.`，并在下表登记；`npm run guard`（`prepublishOnly` 也会跑）会检查相对 `master` 改过的 `.js`、`.mjs` 是否都带声明。`package.json` 等不能写注释的文件由本文件覆盖。
 - **上游入口不变**：`./upstream` 子路径仍导出上游的 `src/index.js`，命令行（`bin/`）行为与上游一致；只有调用了 `configureHostRuntime()` 的宿主才走通办的行为。
 
 ## 改动
@@ -31,6 +32,7 @@
 | 自建 LGPL 版 ffmpeg / ffprobe：构建脚本（macOS 两个架构本机或交叉编译，Windows 在 Linux 上用 mingw 交叉编译；不带 gpl/nonfree/version3，外部库只有 dav1d 与 zlib；编码器、封装器只留插件用到的），手动触发的工作流发布到本仓库 Release（附对应源码与 SHA256SUMS）；`npm run vendor -- <目标>` 按 `ffmpeg-sources.json` 的 sha256 下载并放进 `vendor/` | `scripts/build-ffmpeg.sh`、`.github/workflows/ffmpeg.yml`、`scripts/fetch-ffmpeg.mjs`、`scripts/ffmpeg-sources.json`、`vendor/`（不入库） | 主流 macOS 预编译版全是 GPL 构建，通办不允许 GPL 进入产品；自建才能固定版本、滤镜集合与源码归档 | 不能，通办专用 |
 | 包清单：包名 `@tongdo/video-storyboard`，版本 `<上游版本>-tongdo.<N>`；默认导出通办入口；不声明上游 bundle 与设置页客户端；宿主包改为 peer + dev 依赖 | `package.json`、`package-lock.json`、`dsh.plugin.json`（只同步版本号） | 由通办的多模态 bundle 插入配置行 | 不能，通办专用 |
 | 修复：ffmpeg 提前退出时写 stdin 的 EPIPE 未处理，会成为未捕获异常拖垮整个宿主进程；改为由退出码报错 | `src/storyboard/sheet.js` 的 `exec` | 上游缺陷（用精简 ffmpeg 构建时暴露） | 上游修复后可去掉（可反馈给上游） |
+| 发布闸门：除工作区干净外，再检查相对 `master` 改过的上游 `.js`、`.mjs` 文件头带修改声明 | `scripts/guard-publish.mjs` | Apache-2.0 第 4(b) 条要求被修改的文件本身带显著声明 | 不能，通办专用 |
 | 测试：新增通办入口测试；上游设置页客户端测试在包不挂设置页时跳过 | `test/tongdo.test.mjs`、`test/settings.test.mjs` | 同上 | 不能 |
 
 ## 已知缺陷

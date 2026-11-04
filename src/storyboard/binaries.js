@@ -18,6 +18,8 @@
  * `$HOME/.dsh/tools/ffmpeg/bin/ffprobe.exe` 明明存在、也能手动跑，插件却报
  * "not found" —— 用户会去反复重装 ffmpeg，而真正该做的是把路径指进工作区
  * 或设 DSH_FFPROBE_PATH（issue #76）。所以这里改用 statSync 并保留 errno。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';

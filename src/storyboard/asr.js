@@ -7,6 +7,8 @@
  *
  * 注意：ASR 只解释"人说了什么"，对纯音乐无能为力，也可能对音乐段落产生幻觉歌词。
  * 所以 transcribe 会跳过明显的非语音段（由静音检测给出）。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 
 import { execFile } from 'node:child_process';

@@ -6,6 +6,8 @@
  *
  * 这一层是**纯函数 + 落盘**，不碰 ffmpeg、不碰网络 —— 所以能单测，也能被 CLI / 工具 / 陪看
  * 三条入口各自按不同预算调用。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 
 import { writeFile } from 'node:fs/promises';
