@@ -406,6 +406,9 @@ function exec(args, { input, timeoutMs = 120_000 } = {}) {
       if (code !== 0) reject(new Error(`ffmpeg exited ${code}: ${err.trim().split('\n').slice(-3).join(' | ')}`));
       else resolve({ stdout: Buffer.concat(out), stderr: err });
     });
+    // ffmpeg 提前退出时写 stdin 会得到 EPIPE；不接住它，Socket 的 'error' 会成为未处理异常、拖垮整个宿主进程。
+    // 吞掉 EPIPE 是安全的：同一次失败由上面的 'close'（非零退出码 + stderr）报给调用方。
+    child.stdin.on('error', (e) => { if (e?.code !== 'EPIPE') reject(e); });
     if (input) child.stdin.end(input); else child.stdin.end();
   });
 }
