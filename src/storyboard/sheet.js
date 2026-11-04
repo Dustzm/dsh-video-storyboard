@@ -11,6 +11,8 @@
  *  - 每格按 cover 方式缩放裁切（不变形，溢出部分裁掉）—— 缩放发生在**取帧那一步**，
  *    这里只做搬运：抓回来的 buffer 尺寸就等于格子尺寸
  *  - 格子之间留 1px 缝（画布底色透出来），否则小格子会连成一片
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 
 import { spawn } from 'node:child_process';

@@ -7,6 +7,8 @@
  *  - **只看本地文件**：链接下载（yt-dlp、cookies）不开放，工具只接受本地路径。
  *  - **不注册设置页**：上游的本机设置网页、设置工具和客户端表单都不挂。
  *  - **纯文本模型降级**：当前模型看不到图片时，请识图模型逐格描述后再交给它（见 vision.js）。
+ *  - **渐进加载声明**：宿主装了工具渐进式加载（`toolDisclosure` 服务）时，把五个视频工具登记为
+ *    常驻的“视频理解”组，拖入视频即可直接调用，不用先检索。
  *
  * 处理逻辑（切点、排布、取帧、清单）全部复用上游 `src/storyboard/` 与 `src/tools/` 的实现。
  */
@@ -22,7 +24,7 @@ import * as subtitles from '../tools/subtitles.js';
 import * as zoom from '../tools/zoom.js';
 import { Config, resolveConfig } from './config.js';
 import { locateSpec, probeSpec, storyboardSpec, subtitlesSpec, zoomSpec } from './tool-spec.js';
-import { withDescriptionsForTextModel } from './vision.js';
+import { STORYBOARD_PROFILE, SUBTITLE_PROFILE, withDescriptionsForTextModel } from './vision.js';
 
 export { Config };
 
@@ -34,8 +36,14 @@ export const name = 'tongdo-video-storyboard';
  */
 export const inject = ['tools'];
 
-const LINK_REFUSAL = 'video links are not supported: only local video files can be read. Ask the user to '
-  + 'download the video and attach the file, then call again with its saved path.';
+/**
+ * 链接拒收说明。实测模型拿到“不要下载”后仍会去抓该网站的接口（取直链、元数据），
+ * 所以把“不访问该网站的页面和接口”写明，并要求这一轮就回复用户。
+ */
+const LINK_REFUSAL = 'video links are not supported: only local video files can be read. Reply to the user now: '
+  + 'ask them to download the video and attach the file, then call again with its saved path. '
+  + 'Do not download it with other tools, and do not fetch that site\'s pages or APIs (web fetch, curl, shell) '
+  + 'to get the video, its stream or its details.';
 
 /** 拒绝链接输入：上游会对链接调用 yt-dlp，通办不开放这条路。 */
 function localOnly(args) {
@@ -43,33 +51,52 @@ function localOnly(args) {
 }
 
 /**
+ * 工具渐进式加载里的视频组：常驻，并附中文用途和同义词。超出第三方常驻预算时降为按需，
+ * 目录里仍能按这些词检索到。部署侧想改回按需，在 tool-disclosure 的覆盖配置里加 `video_*` 即可。
+ */
+const DISCLOSURE = {
+  prefix: 'video_',
+  loading: 'resident',
+  group: 'video',
+  label: '视频理解',
+  summary: '查看本地视频：分镜、放大、按台词定位、读字幕。',
+  keywords: ['视频', '录像', '录屏', '看视频', '画面', '字幕', 'mp4'],
+};
+
+/**
+ * 先完成可能失败的异步解析，再设置全局状态和注册工具；全部经 `ctx.effect()`，
+ * 插件卸载或加载中途失败时由宿主按相反顺序撤销。
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {import('./config.js').Config} config
- * @returns {Promise<() => void>}
+ * @returns {Promise<void>}
  */
 export async function apply(ctx, config) {
   const resolved = resolveConfig(config);
   const { defineTool } = await import('@deepseek-ai/dsh-tools');
+  const transcription = await resolveTranscription(ctx, resolved.transcription);
 
-  const disposers = [
-    useMediaBinaries({ ffmpeg: resolved.ffmpegPath, ffprobe: resolved.ffprobePath }),
-    configureHostRuntime({
-      cacheDir: resolved.cacheDir,
-      mediaDir: resolved.mediaDir,
-      transcription: await resolveTranscription(ctx, resolved.transcription),
-    }),
-  ];
+  ctx.effect(
+    () => useMediaBinaries({ ffmpeg: resolved.ffmpegPath, ffprobe: resolved.ffprobePath }),
+    'video-storyboard.binaries',
+  );
+  ctx.effect(
+    () => configureHostRuntime({ cacheDir: resolved.cacheDir, mediaDir: resolved.mediaDir, transcription }),
+    'video-storyboard.runtime',
+  );
 
-  /** 出图的工具：结果交给纯文本降级处理。 */
-  const visual = (spec, run) => defineTool({
+  /** 出图的工具：结果交给纯文本降级处理，`profile` 决定识图模型怎么描述这类图。 */
+  const visual = (spec, run, profile) => defineTool({
     ...spec,
     async execute(args, exec) {
       localOnly(args);
       const value = await run(ctx, args);
-      return withDescriptionsForTextModel(
-        { llm: serviceOf(ctx, 'llm'), exec, visionModel: resolved.visionModel },
-        value,
-      );
+      return withDescriptionsForTextModel({
+        llm: serviceOf(ctx, 'llm'),
+        exec,
+        visionModel: resolved.visionModel,
+        maxTokens: resolved.visionMaxTokens,
+        logger: ctx.logger,
+      }, value, profile);
     },
   });
   /** 只出文字的工具。 */
@@ -83,16 +110,17 @@ export async function apply(ctx, config) {
 
   const tools = [
     textual(probeSpec(), probe.execute),
-    visual(storyboardSpec(), storyboard.execute),
-    visual(zoomSpec(), zoom.execute),
+    visual(storyboardSpec(), storyboard.execute, STORYBOARD_PROFILE),
+    visual(zoomSpec(), zoom.execute, STORYBOARD_PROFILE),
     textual(locateSpec(), locate.execute),
-    visual(subtitlesSpec(), subtitles.execute),
+    visual(subtitlesSpec(), subtitles.execute, SUBTITLE_PROFILE),
   ];
-  for (const tool of tools) disposers.push(ctx.tools.register(tool));
+  for (const tool of tools) ctx.effect(() => ctx.tools.register(tool), `video-storyboard.tool:${tool.name}`);
 
-  return () => {
-    for (const dispose of disposers.reverse()) dispose();
-  };
+  // 没装 tool-disclosure 时回调不执行；声明的生命周期跟随 inject 的作用域。
+  ctx.inject(['toolDisclosure'], (inner) => {
+    inner.toolDisclosure.declare(DISCLOSURE);
+  });
 }
 
 /**

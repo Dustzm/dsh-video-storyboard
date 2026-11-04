@@ -6,6 +6,8 @@
  *
  * 这一层是**纯函数 + 落盘**，不碰 ffmpeg、不碰网络 —— 所以能单测，也能被 CLI / 工具 / 陪看
  * 三条入口各自按不同预算调用。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 
 import { writeFile } from 'node:fs/promises';
@@ -26,11 +28,17 @@ import { hostRuntime } from './runtime.js';
  * 对产品用户没有意义：他们不配置任何东西，也不该被要求去配置。
  */
 const HOST_NO_TRANSCRIPTION = 'transcript: not available — speech-to-text is not enabled in this environment, so the '
-  + 'dialogue was NOT transcribed (this is NOT "no speech"). Work from the frames, on-screen text and the audio strip. '
+  + 'dialogue was NOT transcribed (this is NOT "no speech"). '
   + 'If the user supplied a subtitle or transcript file (.srt or .json), pass it as transcriptFile. When the '
   + 'answer depends on what is said, tell the user plainly that spoken content is not covered.';
 const HOST_NO_TRANSCRIPTION_PROBE = 'no subtitle track and speech-to-text is not enabled here: the dialogue will not be '
   + 'transcribed; storyboards cover pictures, on-screen text and loudness only.';
+
+/**
+ * 清单末尾“图已在上下文里”的那一行。导出给通办的代看降级：识图模型没能描述画面时要精确删掉它，
+ * 否则模型会以为自己看过图。
+ */
+export const SHEET_IN_CONTEXT_LINE = 'sheet already in context: cite cells by number; video_zoom only for a narrower window.';
 
 /** 三档台词预算（字符）：low 只判断"这段在讲什么"，high 要能引用原话。定义在 board.js，这里转出。 */
 export { DETAIL_CHARS };
@@ -1102,8 +1110,9 @@ export function formatManifest(result, {
   lines.push('</storyboard>');
   // 追问时不必重新出图 —— 这张图就在上下文里，按格号引用即可（每省一次就是一张图的钱）。
   // 两行共约 100 字符，换掉一次重读（一张图的钱）—— 只要追问一次就赚回来。
-  lines.push('sheet already in context: cite cells by number; video_zoom only for a narrower window.');
-  lines.push('per-cell times for verification: <name>.evidence.json');
+  lines.push(SHEET_IN_CONTEXT_LINE);
+  // 证据文件只在 saveStoryboards 真的写过时才有（CLI）；插件路径不落盘，就不提它，免得模型去找。
+  if (result.evidencePath) lines.push(`per-cell times for verification: ${result.evidencePath}`);
   return lines.join('\n');
 }
 

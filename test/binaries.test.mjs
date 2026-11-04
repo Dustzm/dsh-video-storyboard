@@ -1,12 +1,19 @@
+/**
+ * binaries.test.mjs — ffmpeg / ffprobe 的解析：候选顺序、"不存在"与"读不到"的区分、宿主托管。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
+ */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import {
-  describeMediaSearch, mediaCandidates, resolveMediaBinary,
-} from '../src/storyboard/binaries.js';
+import * as binaries from '../src/storyboard/binaries.js';
+
+const {
+  describeMediaSearch, hostedMediaCandidates, mediaCandidates, resolveMediaBinary, useMediaBinaries, vendoredMediaDir,
+} = binaries;
 
 function touch(path) {
   mkdirSync(dirname(path), { recursive: true });
@@ -110,4 +117,54 @@ test('binaries: 会话工作区里的 tools/ffmpeg/bin 也在候选里', (t) => 
   assert.equal(resolveMediaBinary('ffmpeg', {
     env: { DSH_HOME: home }, platform: 'linux', cwd: workspace,
   }), path);
+});
+
+test('binaries: 托管候选只有随包目录，不受环境变量影响', () => {
+  const candidates = hostedMediaCandidates('ffmpeg', { platform: 'win32', arch: 'x64' });
+  assert.deepEqual(candidates.map((c) => c.path), [join(vendoredMediaDir('win32', 'x64'), 'ffmpeg.exe')]);
+  assert.ok(candidates.every((c) => !c.explicit));
+});
+
+test('binaries: 托管时没配置的程序按“随包目录 → PATH”重新解析，报错不提环境变量', () => {
+  const undo = useMediaBinaries({ ffprobe: '/opt/ff/ffprobe' });
+  try {
+    const bundled = hostedMediaCandidates('ffmpeg')[0].path;
+    assert.ok([bundled, 'ffmpeg'].includes(binaries.DEFAULT_FFMPEG), `实得 ${binaries.DEFAULT_FFMPEG}`);
+    assert.equal(binaries.DEFAULT_FFPROBE, '/opt/ff/ffprobe');
+    const text = describeMediaSearch('ffmpeg', { env: { DSH_FFMPEG_PATH: '/elsewhere/ffmpeg' } });
+    assert.match(text, /then PATH/);
+    assert.doesNotMatch(text, /DSH_FFMPEG_PATH|elsewhere/);
+    assert.match(describeMediaSearch('ffprobe'), /\/opt\/ff\/ffprobe \[plugin config\]/);
+  } finally {
+    undo();
+  }
+  assert.match(describeMediaSearch('ffmpeg', { env: { DSH_FFMPEG_PATH: '/elsewhere/ffmpeg' } }), /DSH_FFMPEG_PATH/,
+    '撤销后回到非托管的搜索说明');
+});
+
+test('binaries: 后一次托管设置不被前一次的撤销冲掉，最终恢复到托管之前', () => {
+  const before = { ffmpeg: binaries.DEFAULT_FFMPEG, ffprobe: binaries.DEFAULT_FFPROBE };
+  const undoA = useMediaBinaries({ ffmpeg: '/a/ffmpeg', ffprobe: '/a/ffprobe' });
+  const undoB = useMediaBinaries({ ffmpeg: '/b/ffmpeg', ffprobe: '/b/ffprobe' });
+  undoA();
+  assert.equal(binaries.DEFAULT_FFMPEG, '/b/ffmpeg');
+  assert.equal(binaries.DEFAULT_FFPROBE, '/b/ffprobe');
+  undoB();
+  assert.deepEqual({ ffmpeg: binaries.DEFAULT_FFMPEG, ffprobe: binaries.DEFAULT_FFPROBE }, before);
+});
+
+test('binaries: 模块加载时按 FFMPEG_PATH 解析，托管后不再沿用它', async () => {
+  const previous = process.env.FFMPEG_PATH;
+  process.env.FFMPEG_PATH = '/nonexistent/ffmpeg';
+  try {
+    const fresh = await import(`../src/storyboard/binaries.js?env=${Date.now()}`);
+    assert.equal(fresh.DEFAULT_FFMPEG, '/nonexistent/ffmpeg');
+    const undo = fresh.useMediaBinaries({});
+    assert.notEqual(fresh.DEFAULT_FFMPEG, '/nonexistent/ffmpeg');
+    undo();
+    assert.equal(fresh.DEFAULT_FFMPEG, '/nonexistent/ffmpeg');
+  } finally {
+    if (previous === undefined) delete process.env.FFMPEG_PATH;
+    else process.env.FFMPEG_PATH = previous;
+  }
 });

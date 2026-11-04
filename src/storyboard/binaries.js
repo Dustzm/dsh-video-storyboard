@@ -1,8 +1,13 @@
 /**
  * binaries.js — 解析 ffmpeg / ffprobe 可执行文件。
  *
- * 优先级：
- *  0. 宿主托管时由 `useMediaBinaries()` 指定的路径（通办插件入口按 Config 设置）
+ * 宿主托管时（通办插件入口调用 `useMediaBinaries()`）只有三级，不读任何环境变量、
+ * $DSH_HOME/tools 和工作区，免得别的工具留下的 FFMPEG_PATH 之类影响产品用户：
+ *  0. 插件 Config 指定的路径
+ *  1.5 随包分发的二进制：`<包根>/vendor/ffmpeg/<platform>-<arch>/`
+ *  5. PATH 上的 ffmpeg / ffprobe
+ *
+ * 非托管时（CLI、上游 DSH 入口）的优先级：
  *  1. 显式环境变量（DSH_FFMPEG_PATH / FFMPEG_PATH，或 DSH_FFMPEG_DIR）
  *  1.5 随包分发的二进制：`<包根>/vendor/ffmpeg/<platform>-<arch>/`（安装包打包时放入）
  *  2. DSH 自己的安装目录：$DSH_HOME/tools/ffmpeg/bin、$DSH_HOME/bin
@@ -18,6 +23,8 @@
  * `$HOME/.dsh/tools/ffmpeg/bin/ffprobe.exe` 明明存在、也能手动跑，插件却报
  * "not found" —— 用户会去反复重装 ffmpeg，而真正该做的是把路径指进工作区
  * 或设 DSH_FFPROBE_PATH（issue #76）。所以这里改用 statSync 并保留 errno。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -88,6 +95,17 @@ export function mediaCandidates(name, {
   return out;
 }
 
+/**
+ * 宿主托管时的候选：只有随包目录这一个，找不到再交给 PATH。不看环境变量、$DSH_HOME 与工作区。
+ * @param {'ffmpeg'|'ffprobe'} name
+ * @param {{platform?:NodeJS.Platform, arch?:string}} [opts]
+ * @returns {Array<{path:string, source:string, explicit:boolean}>}
+ */
+export function hostedMediaCandidates(name, { platform = process.platform, arch = process.arch } = {}) {
+  const vendored = vendoredMediaDir(platform, arch);
+  return [{ path: join(vendored, name + exeSuffix(platform)), source: `bundled ${vendored}`, explicit: false }];
+}
+
 /** 返回实际存在的第一个候选；没有则返回 null。 */
 export function resolveMediaBinary(name, opts = {}) {
   const probe = opts.probe || probeBinary;
@@ -102,6 +120,13 @@ export function resolveMediaBinary(name, opts = {}) {
  * 读不到的候选会标注原因 —— 这是"文件不存在"和"沙箱挡住了"的唯一区分点。
  */
 export function describeMediaSearch(name, opts = {}) {
+  if (hostedSearch) {
+    // 托管用户不碰环境变量，所以不追加“设 DSH_*_PATH”那段沙箱建议。
+    const configured = hostedSearch.configured[name];
+    if (configured) return `${name} not found at ${configured} [plugin config]`;
+    const tried = hostedMediaCandidates(name, opts).map((c) => `${c.path} [${c.source}]`);
+    return `${name} not found: tried ${tried.join(', ')}, then PATH`;
+  }
   const probe = opts.probe || probeBinary;
   const candidates = mediaCandidates(name, opts);
   if (candidates.length === 0) return `no search paths for ${name}`;
@@ -132,16 +157,39 @@ export let DEFAULT_FFMPEG = resolveMediaBinary('ffmpeg') || 'ffmpeg';
 export let DEFAULT_FFPROBE = resolveMediaBinary('ffprobe') || 'ffprobe';
 
 /**
- * 宿主托管：用宿主给定的路径替换默认的 ffmpeg / ffprobe（只替换给了的那个）。
+ * 当前的托管设置（最近一次 `useMediaBinaries()` 的那份）；null 表示未托管。
+ * @type {{ffmpeg: string, ffprobe: string, configured: {ffmpeg?: string, ffprobe?: string},
+ *   previous: {ffmpeg: string, ffprobe: string}} | null}
+ */
+let hostedSearch = null;
+
+/** 托管时没配置路径的那个程序：随包目录里有就用它，否则交给 PATH。 */
+function resolveHosted(name) {
+  const found = hostedMediaCandidates(name).find((candidate) => probeBinary(candidate.path).ok);
+  return found ? found.path : name;
+}
+
+/**
+ * 宿主托管：配置了的程序用给定路径，没配置的按“随包目录 → PATH”重新解析（不再沿用模块加载时
+ * 按环境变量解析出的值）。
  * @param {{ffmpeg?: string, ffprobe?: string}} paths
- * @returns {() => void} 恢复调用前的值
+ * @returns {() => void} 撤销：只在当前仍是本次设置时，恢复到托管之前的值
  */
 export function useMediaBinaries({ ffmpeg, ffprobe } = {}) {
-  const previous = { ffmpeg: DEFAULT_FFMPEG, ffprobe: DEFAULT_FFPROBE };
-  if (ffmpeg) DEFAULT_FFMPEG = ffmpeg;
-  if (ffprobe) DEFAULT_FFPROBE = ffprobe;
+  const applied = {
+    ffmpeg: ffmpeg || resolveHosted('ffmpeg'),
+    ffprobe: ffprobe || resolveHosted('ffprobe'),
+    configured: { ...(ffmpeg ? { ffmpeg } : {}), ...(ffprobe ? { ffprobe } : {}) },
+    // 覆盖一份仍在生效的托管设置时，沿用它记下的托管前的值，撤销时不会退回到别人的设置。
+    previous: hostedSearch?.previous ?? { ffmpeg: DEFAULT_FFMPEG, ffprobe: DEFAULT_FFPROBE },
+  };
+  DEFAULT_FFMPEG = applied.ffmpeg;
+  DEFAULT_FFPROBE = applied.ffprobe;
+  hostedSearch = applied;
   return () => {
-    DEFAULT_FFMPEG = previous.ffmpeg;
-    DEFAULT_FFPROBE = previous.ffprobe;
+    if (hostedSearch !== applied) return;
+    DEFAULT_FFMPEG = applied.previous.ffmpeg;
+    DEFAULT_FFPROBE = applied.previous.ffprobe;
+    hostedSearch = null;
   };
 }

@@ -1,3 +1,8 @@
+/**
+ * flash.test.mjs — 切点打标签（flash.js）：闪光、白闪、黑场、硬切、溶解、运镜的判定。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
+ */
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
@@ -117,4 +122,62 @@ test('flash: 闪烁紧邻真剪辑时，两刀各自拿到对的标签', () => {
   assert.equal(tagged[0].type, 'flash', '闪的那刀应该是 flash');
   assert.equal(tagged[2].type, 'flash', '后面那刀也是 flash');
   assert.equal(tagged.length, 3, '一个都不许删');
+});
+
+/**
+ * 直接给出逐帧的指纹、亮度均值与切点分数，用来覆盖指纹看不出来的切换（饱和色硬切、亮度台阶）。
+ * `meanAt(i)`、`printAt(i)` 给第 i 帧；`scoreAt(i)` 是第 i 帧相对第 i-1 帧的分数。
+ */
+function frames({ count = 40, meanAt, printAt, scoreAt }) {
+  const prints = [];
+  const means = [];
+  const scores = [];
+  for (let i = 0; i < count; i++) {
+    prints.push(printAt(i));
+    means.push(meanAt(i));
+    scores.push(scoreAt(i));
+  }
+  return { prints, means, scores };
+}
+
+const CUT = 20;
+const spike = (i) => (i === CUT ? 255 : 0);
+
+test('tagCuts: 饱和色之间的硬切（V 指纹不变、变化集中在一帧）判 hardcut，不判 motion', () => {
+  const A = baseTexture();
+  const data = frames({ meanAt: () => 252, printAt: () => A, scoreAt: spike });
+  const [cut] = tagCuts([{ t: CUT / 25 }], { ...data, fps: 25 });
+  assert.ok(cut.evidence.nv < NV_MAX, `V 指纹应几乎不变，实得 nv=${cut.evidence.nv}`);
+  assert.equal(cut.type, 'hardcut');
+});
+
+test('tagCuts: 亮画面切到暗画面（没有内部峰值）不判 white', () => {
+  const A = baseTexture();
+  const B = baseTexture().map((v) => 255 - v);
+  const data = frames({
+    meanAt: (i) => (i < CUT ? 253 : 128), printAt: (i) => (i < CUT ? A : B), scoreAt: spike,
+  });
+  const [cut] = tagCuts([{ t: CUT / 25 }], { ...data, fps: 25 });
+  assert.ok(cut.evidence.rise <= PULSE_MIN, `峰值在端点上，rise 应接近 0，实得 ${cut.evidence.rise}`);
+  assert.equal(cut.type, 'hardcut');
+});
+
+test('tagCuts: 真白闪转场（中间一帧冲亮、前后画面不同）仍判 white', () => {
+  const A = baseTexture();
+  const B = baseTexture().map((v) => 255 - v);
+  const data = frames({
+    meanAt: (i) => (i === CUT ? 250 : i < CUT ? 120 : 90),
+    printAt: (i) => (i < CUT ? A : B),
+    scoreAt: (i) => (i === CUT || i === CUT + 1 ? 200 : 0),
+  });
+  const [cut] = tagCuts([{ t: CUT / 25 }], { ...data, fps: 25 });
+  assert.equal(cut.type, 'white');
+});
+
+test('tagCuts: 真运镜（变化摊在整个窗口、指纹净位移小）仍判 motion', () => {
+  const A = baseTexture();
+  const data = frames({ meanAt: () => 130, printAt: () => A, scoreAt: () => 40 });
+  const [cut] = tagCuts([{ t: CUT / 25 }], { ...data, fps: 25 });
+  assert.ok(cut.evidence.conc < 0.45, `运镜的集中度应低，实得 ${cut.evidence.conc}`);
+  assert.equal(cut.type, 'motion');
 });

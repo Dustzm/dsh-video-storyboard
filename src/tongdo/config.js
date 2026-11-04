@@ -31,7 +31,11 @@ import { dshCachePath } from '@deepseek-ai/dsh-home-paths';
  * @property {string} [dataDir]  缓存目录；省略时为 `$DSH_HOME/cache/video-storyboard`
  * @property {TranscriptionConfig} [transcription]  语音转写服务；省略时不转写
  * @property {VisionModelConfig} [visionModel]  纯文本模型看图时代看的识图模型；省略时从当前路由自动挑选
+ * @property {number} [visionMaxTokens]  代看时识图模型单次描述的输出上限；省略时为 8192
  */
+
+/** 代看输出上限的默认值与允许范围（token）。 */
+const VISION_MAX_TOKENS = { default: 8192, min: 1024, max: 65536 };
 
 export const Config = z.object({
   ffmpegPath: z.string().description('ffmpeg 可执行文件路径；留空时使用随安装包分发的版本，再找系统 PATH。'),
@@ -47,6 +51,8 @@ export const Config = z.object({
     provider: z.string(),
     model: z.string(),
   }).description('当前模型看不到图片时，代为看图的识图模型；不配置时从当前模型所在路由自动挑选。'),
+  visionMaxTokens: z.natural().min(VISION_MAX_TOKENS.min).max(VISION_MAX_TOKENS.max).default(VISION_MAX_TOKENS.default)
+    .description('代看时识图模型单次描述的输出上限（token），实际取 min(本值, 512 + 128×格数)。'),
 });
 
 /**
@@ -57,6 +63,7 @@ export const Config = z.object({
  * @property {string} mediaDir
  * @property {TranscriptionConfig | null} transcription
  * @property {VisionModelConfig | null} visionModel
+ * @property {number} visionMaxTokens
  */
 
 const blankToUndefined = (value) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined);
@@ -75,7 +82,17 @@ export function resolveConfig(config = {}) {
     mediaDir: join(cacheDir, 'media'),
     transcription: resolveTranscription(config.transcription),
     visionModel: resolveVisionModel(config.visionModel),
+    visionMaxTokens: resolveVisionMaxTokens(config.visionMaxTokens),
   };
+}
+
+/** 没经过 schemastery 的调用方（测试、直接 apply）同样要拒绝越界值。 */
+function resolveVisionMaxTokens(raw) {
+  if (raw === undefined) return VISION_MAX_TOKENS.default;
+  if (!Number.isInteger(raw) || raw < VISION_MAX_TOKENS.min || raw > VISION_MAX_TOKENS.max) {
+    throw new Error(`video-storyboard: visionMaxTokens must be an integer in [${VISION_MAX_TOKENS.min}, ${VISION_MAX_TOKENS.max}]`);
+  }
+  return raw;
 }
 
 /**

@@ -3,6 +3,8 @@
  *
  * 设置页有自己的一份读写层（settings/config.js）；核心模块不能反过来依赖设置页，
  * 否则 settings -> asr -> core 的圈会绕回来。这里只读、只关心路径类字段。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 
 import { existsSync, readFileSync } from 'node:fs';
