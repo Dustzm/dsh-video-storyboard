@@ -4,7 +4,8 @@
  * 输出结构、超时、并发标记沿用上游 `storyboard/tool-spec.js`；这里只重写两样：
  *  - **参数**：只留办公场景用得到的。链接下载、cookies、清晰度、OCR、档位微调等参数不声明，
  *    宿主会丢弃未声明的参数，上游 handler 取到 undefined 后走默认值。
- *  - **描述**：面向“用户把视频文件丢进对话”的场景，不出现安装、配置、链接相关的说法。
+ *  - **描述**：面向“用户把视频文件丢进对话”的场景，不出现安装、配置的说法；链接只说明会被拒收，
+ *    让模型把链接交给工具、转告拒收说明，不说怎么下载。
  *
  * 参数说明文案直接复用上游的（语义相同的文案只保留一份）。
  */
@@ -16,8 +17,13 @@ import {
 const INPUT = {
   type: 'string',
   required: true,
-  description: 'Absolute path of a local video file, e.g. the saved path of a video the user attached.',
+  description: 'Absolute path of a local video file, e.g. the saved path of a video the user attached. '
+    + 'Web links are refused with a message to pass on to the user.',
 };
+
+/** 用户只给链接时的引导：交给工具拿到拒收说明，而不是自己去下载。probe 与 storyboard 共用。 */
+const LINK_HINT = 'If the user only gives a video link, do not download it with shell or web tools; pass the link as '
+  + 'input and relay the reply.';
 
 /** 从上游参数表里挑出要保留的参数，`input` 换成通办的说明。 */
 function keep(parameters, names) {
@@ -41,21 +47,28 @@ export function probeSpec() {
     '',
     'Call this first when the user gives you a video (mp4, mov, mkv, webm, avi, m4v, flv, wmv, ts …) and you do',
     'not know how long it is. Long videos are read window by window with video_storyboard({ input, from, segment }).',
+    '',
+    LINK_HINT,
   ], []);
 }
 
 export function storyboardSpec() {
   return adapt(storyboardToolSpec(), [
-    'Watch a video: turns it into storyboard images — one frame per shot, numbered cells with time ranges',
-    '(cell 7 = 00:12.76-00:31.40) — plus a text index with cuts, loudness and any dialogue. Use it whenever',
-    'the user attaches or refers to a video file and asks about its content.',
+    'Watch a video: turns it into storyboard images — numbered cells sampled across the video, each with its time',
+    'range (cell 7 = 00:12.76-00:31.40); a cell can span a cut, and the exact cut times are in the text index —',
+    'plus that text index with cuts, loudness and any dialogue. Use it whenever the user attaches or refers to a',
+    'video file and asks about its content.',
     '',
     'Cite cells by number in your answer. Need a closer look at one moment? video_zoom({ input, cellId }).',
+    'The text index is authoritative for times and cuts: answer from it and the sheet, and do not re-extract or',
+    'OCR frames with shell tools unless the user asks for frame-exact detail.',
     'Long video: read it in windows (`from` + `segment`) and follow the "next: from=…" hint; a whole-file',
     'overview only identifies what the video is.',
     '',
     'Cost: each image is ~200-1000 vision tokens and the text index is billed on top. Leave `strategy` unset',
     '(auto picks the cheapest readable layout); `dryRun: true` reports the image count without rendering.',
+    '',
+    LINK_HINT,
   ], ['from', 'to', 'segment', 'strategy', 'cutFloor', 'maxFrames', 'dryRun', 'detail', 'cellRange', 'textOnly', 'transcriptFile']);
 }
 

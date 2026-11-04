@@ -3,6 +3,8 @@
  *
  * 起因（真实事故）：一部 2 小时 35 分的电影，64 个 cell 的清单约 75KB，宿主把 44% 折进磁盘溢出文件，
  * 模型没去读，等于中段 44 分钟的台词完全没给到。所以清单必须自己带预算、自己会分页。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,6 +13,8 @@ import {
   DETAIL_CHARS, countTextInSilence, formatManifest, formatPlanPreview, truncateAtSentence,
   withSheetSuffix,
 } from '../src/storyboard/pipeline.js';
+import { SHEET_IN_CONTEXT_LINE } from '../src/storyboard/format.js';
+import { configureHostRuntime } from '../src/storyboard/runtime.js';
 
 /** 造一个 64 格的 result（每格 300 字），不跑 ffmpeg */
 function makeResult({ cells = 64, textLen = 300 } = {}) {
@@ -597,4 +601,26 @@ test('说明书只在干跑且扫描新鲜时出现一次（它按次收费，�
   // 关键数字必须在手册里：模型据此决定要不要选 full
   assert.match(fresh, /Never pass "full" as a safe default/);
   assert.match(fresh, /NOT "one frame every N seconds"/);
+});
+
+test('formatManifest: 只在真写过证据文件时才给出它的路径', () => {
+  const plain = formatManifest(makeResult({ cells: 4 }), { maxChars: 200_000 });
+  assert.doesNotMatch(plain, /evidence\.json/, '没写证据文件时不该让模型去找它');
+  assert.ok(plain.trimEnd().endsWith(SHEET_IN_CONTEXT_LINE));
+  const r = makeResult({ cells: 4 });
+  r.evidencePath = '/x/a.evidence.json';
+  assert.match(formatManifest(r, { maxChars: 200_000 }), /per-cell times for verification: \/x\/a\.evidence\.json/);
+});
+
+test('formatManifest: 宿主托管且没配转写时，台词说明中性、不叫模型只看画面', () => {
+  const dispose = configureHostRuntime({ cacheDir: '/tmp/tongdo-manifest', mediaDir: '/tmp/tongdo-manifest/media', transcription: null });
+  try {
+    const r = makeResult({ cells: 4 });
+    r.transcript = { source: 'no-key', segments: 0 };
+    const text = formatManifest(r, { maxChars: 200_000 });
+    assert.match(text, /speech-to-text is not enabled/);
+    assert.doesNotMatch(text, /Work from the frames/);
+  } finally {
+    dispose();
+  }
 });

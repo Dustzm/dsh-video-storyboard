@@ -68,6 +68,15 @@ test('tongdo specs: 宿主 defineTool 接受全部五个工具，且不暴露链
   assert.deepEqual(names, ['video_probe', 'video_storyboard', 'video_zoom', 'video_locate', 'video_subtitles']);
 });
 
+test('tongdo specs: 链接会被拒收的说法写进 input 与 probe、storyboard 的描述；分镜不再说一镜一帧', () => {
+  for (const make of Object.values(SPECS)) assert.match(make().parameters.input.description, /links are refused/);
+  for (const make of [probeSpec, storyboardSpec]) assert.match(make().description, /do not download/);
+  const storyboard = storyboardSpec().description;
+  assert.doesNotMatch(storyboard, /one frame per shot/);
+  assert.match(storyboard, /a cell can span a cut/);
+  assert.match(storyboard, /text index is authoritative/);
+});
+
 test('tongdo config: 默认缓存在数据目录下，转写地址带凭据时拒绝', () => {
   const previous = process.env.DSH_HOME;
   process.env.DSH_HOME = '/tmp/tongdo-home';
@@ -104,10 +113,12 @@ test('tongdo apply: 注册五个工具、托管运行时；dispose 全部撤销'
     assert.equal(DEFAULT_FFMPEG, '/opt/ff/ffmpeg');
     const asr = resolveAsrConfig();
     assert.equal(asr.enabled, false, '没配转写时宿主托管的 ASR 必须是关闭的');
-    await assert.rejects(
-      registered.get('video_storyboard').execute({ input: 'https://example.com/v.mp4' }, {}),
-      /only local video files/,
-    );
+    for (const name of ['video_storyboard', 'video_probe']) {
+      await assert.rejects(
+        registered.get(name).execute({ input: 'https://example.com/v.mp4' }, {}),
+        /only local video files[\s\S]*Do not download it with other tools/,
+      );
+    }
   } finally {
     dispose();
   }
@@ -202,6 +213,8 @@ test('tongdo e2e: 本地视频出分镜图，台词说明不含安装指引', as
       assert.equal(saved[0].mediaType, 'image/png');
       assert.match(value.text, /speech-to-text is not enabled/);
       assert.doesNotMatch(value.text, /sherpa|cookie|docs\/|asr\.json|告诉用户/i);
+      assert.doesNotMatch(value.text, /evidence\.json/, '插件不写证据文件，清单里不该提它');
+      assert.doesNotMatch(value.text, /Work from the frames/);
 
       const probed = await registered.get('video_probe').execute({ input: clip }, {});
       assert.match(probed.text, /duration="8/);

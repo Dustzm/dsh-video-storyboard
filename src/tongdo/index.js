@@ -35,7 +35,7 @@ export const name = 'tongdo-video-storyboard';
 export const inject = ['tools'];
 
 const LINK_REFUSAL = 'video links are not supported: only local video files can be read. Ask the user to '
-  + 'download the video and attach the file, then call again with its saved path.';
+  + 'download the video and attach the file, then call again with its saved path. Do not download it with other tools.';
 
 /** 拒绝链接输入：上游会对链接调用 yt-dlp，通办不开放这条路。 */
 function localOnly(args) {

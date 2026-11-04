@@ -20,6 +20,8 @@
  *
  * 真实素材实测：闪电 pulse=151/nv=3.9/corr=0.996；真切点 pulse=36/nv=72.7/corr=0.49。
  * 白闪转场 nv 大（画面换了）所以不会被误判成 flash。
+ *
+ * Modified by Tongdo; see TONGDO_CHANGES.md.
  */
 
 import { FP_W, FP_H } from './scan.js';
@@ -34,6 +36,8 @@ export const CORR_MIN = 0.85;
 export const DELTA_SEC = 0.24;
 /** 全局平移补偿的搜索半径（16×9 指纹上的格数） */
 export const DX_RANGE = 8;
+/** 过渡集中度下限：变化集中在一两帧里（硬切）时高，摊在多帧里（溶解、运镜）时低 */
+export const CONC_HARD = 0.45;
 
 const mean = (arr, from = 0, to = arr.length) => {
   let s = 0;
@@ -131,9 +135,13 @@ export function flashEvidence({ prints, means, t, fps, deltaSec = DELTA_SEC, sco
     }
   }
 
+  // ⑤ 内部峰值：最亮的一帧比两端中较亮的那端高多少。白闪转场的峰在窗口中间；
+  //    峰值落在端点上只说明某一侧画面本来就亮（亮度台阶），不是闪白。
+  const rise = maxV - Math.max(means[lo], means[hi]);
+
   return {
     pulse: +pulse.toFixed(1), nv: +nv.toFixed(1), corr: +corr.toFixed(3), dx,
-    minV: +minV.toFixed(0), maxV: +maxV.toFixed(0), conc: +conc.toFixed(2),
+    minV: +minV.toFixed(0), maxV: +maxV.toFixed(0), conc: +conc.toFixed(2), rise: +rise.toFixed(1),
     isFlash: pulse > PULSE_MIN && nv < NV_MAX && corr > CORR_MIN,
   };
 }
@@ -169,11 +177,15 @@ export function tagCuts(cuts, { prints, means, fps = 25, scores } = {}) {
     // 才允许判 flash，实测会把"闪一下紧接着真剪辑"这种正常素材也挡掉（两个切点隔 0.4s，
     // 比 2δ=0.48s 还近）。既然现在只打标签、不删切点，标签错的代价只是表述不准，
     // 而漏标会让模型误以为"这里没有闪"。所以直接按证据说话。
+    //
+    // 指纹是 V=max(R,G,B)：两种饱和色之间硬切时 V 几乎不变（nv 很小），只看 nv 会误判成运镜；
+    // 所以 nv 小但变化集中在单帧（conc 高）时仍判硬切。白闪要求窗口内部真有一个比两端都亮
+    // 的峰（rise），否则只是亮画面切到暗画面。
     if (ev.isFlash) r.type = 'flash';
     else if (ev.minV < 12) r.type = 'black';
-    else if (ev.maxV > 245 && ev.nv > 10) r.type = 'white';
-    else if (ev.nv >= NV_MAX) r.type = ev.conc >= 0.45 ? 'hardcut' : 'dissolve';
-    else r.type = 'motion';
+    else if (ev.maxV > 245 && ev.nv > 10 && ev.rise > PULSE_MIN) r.type = 'white';
+    else if (ev.nv >= NV_MAX) r.type = ev.conc >= CONC_HARD ? 'hardcut' : 'dissolve';
+    else r.type = ev.conc >= CONC_HARD ? 'hardcut' : 'motion';
   }
 
   return rows;
