@@ -7,6 +7,8 @@
  *  - **只看本地文件**：链接下载（yt-dlp、cookies）不开放，工具只接受本地路径。
  *  - **不注册设置页**：上游的本机设置网页、设置工具和客户端表单都不挂。
  *  - **纯文本模型降级**：当前模型看不到图片时，请识图模型逐格描述后再交给它（见 vision.js）。
+ *  - **渐进加载声明**：宿主装了工具渐进式加载（`toolDisclosure` 服务）时，把五个视频工具登记为
+ *    常驻的“视频理解”组，拖入视频即可直接调用，不用先检索。
  *
  * 处理逻辑（切点、排布、取帧、清单）全部复用上游 `src/storyboard/` 与 `src/tools/` 的实现。
  */
@@ -41,6 +43,19 @@ const LINK_REFUSAL = 'video links are not supported: only local video files can 
 function localOnly(args) {
   if (isHttpUrl(args?.input)) throw new Error(LINK_REFUSAL);
 }
+
+/**
+ * 工具渐进式加载里的视频组：常驻，并附中文用途和同义词。超出第三方常驻预算时降为按需，
+ * 目录里仍能按这些词检索到。部署侧想改回按需，在 tool-disclosure 的覆盖配置里加 `video_*` 即可。
+ */
+const DISCLOSURE = {
+  prefix: 'video_',
+  loading: 'resident',
+  group: 'video',
+  label: '视频理解',
+  summary: '查看本地视频：分镜、放大、按台词定位、读字幕。',
+  keywords: ['视频', '录像', '录屏', '看视频', '画面', '字幕', 'mp4'],
+};
 
 /**
  * 先完成可能失败的异步解析，再设置全局状态和注册工具；全部经 `ctx.effect()`，
@@ -95,6 +110,11 @@ export async function apply(ctx, config) {
     visual(subtitlesSpec(), subtitles.execute, SUBTITLE_PROFILE),
   ];
   for (const tool of tools) ctx.effect(() => ctx.tools.register(tool), `video-storyboard.tool:${tool.name}`);
+
+  // 没装 tool-disclosure 时回调不执行；声明的生命周期跟随 inject 的作用域。
+  ctx.inject(['toolDisclosure'], (inner) => {
+    inner.toolDisclosure.declare(DISCLOSURE);
+  });
 }
 
 /**

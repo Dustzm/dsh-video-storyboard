@@ -34,6 +34,7 @@
 | 自建 LGPL 版 ffmpeg / ffprobe：构建脚本（macOS 两个架构本机或交叉编译，Windows 在 Linux 上用 mingw 交叉编译；不带 gpl/nonfree/version3，外部库只有 dav1d 与 zlib；编码器、封装器只留插件用到的），手动触发的工作流发布到本仓库 Release（附对应源码与 SHA256SUMS）；`npm run vendor -- <目标>` 按 `ffmpeg-sources.json` 的 sha256 下载并放进 `vendor/` | `scripts/build-ffmpeg.sh`、`.github/workflows/ffmpeg.yml`、`scripts/fetch-ffmpeg.mjs`、`scripts/ffmpeg-sources.json`、`vendor/`（不入库） | 主流 macOS 预编译版全是 GPL 构建，通办不允许 GPL 进入产品；自建才能固定版本、滤镜集合与源码归档 | 不能，通办专用 |
 | 包清单：包名 `@tongdo/video-storyboard`，版本 `<上游版本>-tongdo.<N>`；默认导出通办入口；不声明上游 bundle 与设置页客户端；宿主包改为 peer + dev 依赖 | `package.json`、`package-lock.json`、`dsh.plugin.json`（只同步版本号） | 由通办的多模态 bundle 插入配置行 | 不能，通办专用 |
 | 修复：ffmpeg 提前退出时写 stdin 的 EPIPE 未处理，会成为未捕获异常拖垮整个宿主进程；改为由退出码报错 | `src/storyboard/sheet.js` 的 `exec` | 上游缺陷（用精简 ffmpeg 构建时暴露） | 上游修复后可去掉（可反馈给上游） |
+| 渐进加载声明：宿主装了 tool-disclosure 时，经 `ctx.inject(['toolDisclosure'])` 把 `video_` 前缀的工具登记为常驻的“视频理解”组，附中文用途和同义词；声明随插件卸载撤销，没装时不执行 | `src/tongdo/index.js` 的 `DISCLOSURE` | 工具按需加载时，拖入视频还要先检索一次才能调用；超出第三方常驻预算降为按需时，目录里仍能按中文词检索到 | 不能，通办专用；部署侧想改回按需，在 tool-disclosure 的覆盖配置里加 `video_*` |
 | 发布闸门：除工作区干净外，再检查相对 `master` 改过的上游 `.js`、`.mjs` 文件头带修改声明 | `scripts/guard-publish.mjs` | Apache-2.0 第 4(b) 条要求被修改的文件本身带显著声明 | 不能，通办专用 |
 | 测试：新增通办入口测试；上游设置页客户端测试在包不挂设置页时跳过；切点判定、证据行与托管台词说明补测试 | `test/tongdo.test.mjs`、`test/settings.test.mjs`、`test/flash.test.mjs`、`test/manifest.test.mjs`、`test/binaries.test.mjs`；e2e 加 `TONGDO_REQUIRE_BUNDLED_FFMPEG=1` 开关，打包前核对插件用的是随包二进制且构建为 LGPL | 同上 | 不能 |
 

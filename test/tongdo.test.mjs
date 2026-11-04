@@ -48,7 +48,11 @@ function fakeScope() {
   };
 }
 
-/** 只记录注册与图片提交的宿主上下文。`services` 里给了的服务经 `ctx.get()` 取到。 */
+/**
+ * 只记录注册、图片提交与渐进加载声明的宿主上下文。`services` 里给了的服务经 `ctx.get()` 取到；
+ * `ctx.inject(deps, fn)` 在依赖都在时开一个子作用域执行 fn，随父作用域一起撤销。
+ * 带 `forCaller(inner)` 的服务在子作用域里按调用方绑定，对应 cordis 经调用方上下文访问服务。
+ */
 function fakeContext(services = {}) {
   const registered = new Map();
   const saved = [];
@@ -72,9 +76,38 @@ function fakeContext(services = {}) {
     },
     get: (name) => all[name],
     effect: (fn) => scope.effect(fn),
+    inject(deps, fn) {
+      if (!deps.every((dep) => all[dep])) return;
+      scope.effect(() => {
+        const child = fakeScope();
+        const inner = { ...ctx, effect: (body) => child.effect(body) };
+        for (const dep of deps) inner[dep] = all[dep].forCaller ? all[dep].forCaller(inner) : all[dep];
+        fn(inner);
+        return () => child.dispose();
+      });
+    },
     logger: { warn() {}, error() {} },
   };
   return { registered, saved, ctx, dispose: () => scope.dispose() };
+}
+
+/** 假的 toolDisclosure 服务：声明随调用方作用域撤销，与宿主的 `declare()` 一致。 */
+function fakeDisclosure() {
+  const declared = new Set();
+  const calls = [];
+  return {
+    declared,
+    calls,
+    forCaller: (caller) => ({
+      declare(declaration) {
+        calls.push(declaration);
+        return caller.effect(() => {
+          declared.add(declaration);
+          return () => declared.delete(declaration);
+        });
+      },
+    }),
+  };
 }
 
 test('tongdo specs: 宿主 defineTool 接受全部五个工具，且不暴露链接与设置相关参数', () => {
@@ -183,6 +216,26 @@ test('tongdo apply: 转写密钥解析失败时整体拒绝，不留下全局状
   assert.equal(hostRuntime(), null);
   assert.equal(registered.size, 0);
   dispose();
+});
+
+test('tongdo apply: 装了渐进加载时把视频工具登记为常驻的视频组，卸载时撤销；没装时不登记', async () => {
+  const disclosure = fakeDisclosure();
+  const host = fakeContext({ toolDisclosure: disclosure });
+  await plugin.apply(host.ctx, { dataDir: '/tmp/tongdo-video-cache' });
+  assert.equal(disclosure.calls.length, 1);
+  const [declaration] = disclosure.calls;
+  assert.equal(declaration.prefix, 'video_');
+  assert.equal(declaration.loading, 'resident');
+  assert.equal(declaration.group, 'video');
+  assert.ok(declaration.label && declaration.summary && declaration.keywords.includes('视频'));
+  assert.equal(disclosure.declared.size, 1);
+  host.dispose();
+  assert.equal(disclosure.declared.size, 0, '插件卸载后声明随之撤销');
+
+  const bare = fakeContext();
+  await plugin.apply(bare.ctx, { dataDir: '/tmp/tongdo-video-cache' });
+  assert.equal(bare.registered.size, 5, '没装渐进加载时照常注册');
+  bare.dispose();
 });
 
 /** 识图模型的默认信息：收图，推理档位从低到高。 */
