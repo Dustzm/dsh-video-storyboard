@@ -191,15 +191,62 @@ test('tongdo apply: 注册五个工具、托管运行时；卸载时全部撤销
   assert.equal(DEFAULT_FFMPEG, before);
 });
 
-test('tongdo apply: 没配 ffmpegPath 时按“随包目录 → PATH”解析，不沿用环境变量解析出的值', async () => {
-  const { ctx, dispose } = fakeContext();
-  await plugin.apply(ctx, { dataDir: '/tmp/tongdo-video-cache' });
+/**
+ * 在子进程里加载插件并 apply 一次：`DEFAULT_FFMPEG` 在模块加载时按环境变量求值，
+ * 只有新进程才能让它真的从环境变量里取值。输出加载时、apply 后、撤销后的取值。
+ */
+function applyInFreshProcess() {
+  const url = (path) => new URL(path, import.meta.url).href;
+  const script = `
+    const binaries = await import(${JSON.stringify(url('../src/storyboard/binaries.js'))});
+    const plugin = await import(${JSON.stringify(url('../src/tongdo/index.js'))});
+    const pick = () => ({ ffmpeg: binaries.DEFAULT_FFMPEG, ffprobe: binaries.DEFAULT_FFPROBE });
+    const disposers = [];
+    const ctx = {
+      tools: { register: () => () => {} },
+      get: () => undefined,
+      effect: (fn) => { disposers.push(fn()); },
+      inject() {},
+    };
+    const loaded = pick();
+    await plugin.apply(ctx, { dataDir: ${JSON.stringify(join(tmpdir(), 'tongdo-video-cache'))} });
+    const applied = pick();
+    for (const dispose of disposers.reverse()) dispose?.();
+    console.log(JSON.stringify({ loaded, applied, restored: pick() }));
+  `;
+  const child = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: fileURLToPath(new URL('..', import.meta.url)),
+    encoding: 'utf8',
+  });
+  assert.equal(child.status, 0, child.stderr);
+  return JSON.parse(child.stdout.trim().split('\n').at(-1));
+}
+
+test('tongdo apply: 没配 ffmpegPath 时按“随包目录 → PATH”解析，不沿用环境变量解析出的值', () => {
+  const ENV_PATHS = {
+    DSH_FFMPEG_PATH: '/nonexistent/dsh/ffmpeg',
+    FFMPEG_PATH: '/nonexistent/ffmpeg',
+    DSH_FFPROBE_PATH: '/nonexistent/dsh/ffprobe',
+    FFPROBE_PATH: '/nonexistent/ffprobe',
+  };
+  const saved = Object.fromEntries(Object.keys(ENV_PATHS).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, ENV_PATHS);
   try {
-    const bundled = join(vendoredMediaDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
-    assert.ok([bundled, 'ffmpeg'].includes(DEFAULT_FFMPEG), `实得 ${DEFAULT_FFMPEG}`);
+    const { loaded, applied, restored } = applyInFreshProcess();
+    assert.deepEqual(loaded, { ffmpeg: ENV_PATHS.DSH_FFMPEG_PATH, ffprobe: ENV_PATHS.DSH_FFPROBE_PATH },
+      '前提：模块加载时确实按环境变量解析');
+    for (const name of ['ffmpeg', 'ffprobe']) {
+      const bundled = join(vendoredMediaDir(), process.platform === 'win32' ? `${name}.exe` : name);
+      assert.ok([bundled, name].includes(applied[name]), `${name} 实得 ${applied[name]}`);
+    }
+    assert.deepEqual(restored, loaded, '卸载后恢复托管前的值');
   } finally {
-    dispose();
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
+  for (const key of Object.keys(ENV_PATHS)) assert.equal(process.env[key], saved[key], `${key} 已恢复`);
 });
 
 test('tongdo apply: 转写密钥解析失败时整体拒绝，不留下全局状态和工具', async () => {
