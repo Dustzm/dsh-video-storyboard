@@ -20,7 +20,7 @@ import { locateSpec, probeSpec, storyboardSpec, subtitlesSpec, zoomSpec } from '
 import {
   STORYBOARD_PROFILE, SUBTITLE_PROFILE, describeBudget, withDescriptionsForTextModel,
 } from '../src/tongdo/vision.js';
-import { SHEET_IN_CONTEXT_LINE } from '../src/storyboard/format.js';
+import { SHEET_IN_CONTEXT_LINE, formatForDetail } from '../src/storyboard/format.js';
 import { hostRuntime } from '../src/storyboard/runtime.js';
 import { resolveAsrConfig } from '../src/storyboard/asr.js';
 import { DEFAULT_FFMPEG } from '../src/storyboard/binaries.js';
@@ -257,6 +257,39 @@ test('vision: 发给识图模型的索引只有首行与格子行；匹配不到
   await withDescriptionsForTextModel({ ...ENV, llm: fallback }, odd);
   assert.ok(fallback.calls[0].messages[0].content[0].text.endsWith(`\n${odd.text}`));
   assert.equal(fallback.calls[0].maxTokens, 512 + 128 * 16, '数不出格子时按每张图 16 格估算');
+});
+
+/** 4 张图、64 格、每格长台词的分镜结果：detail high 时清单按字符预算在中途截断。 */
+function pagedStoryboard() {
+  const sheets = [1, 2, 3, 4].map((sheet) => ({
+    sheet, cols: 4, rows: 4, width: 1064, height: 600,
+    cells: Array.from({ length: 16 }, (_, k) => {
+      const i = (sheet - 1) * 16 + k + 1;
+      return { i, sheet, t_start: (i - 1) * 145, t_end: i * 145, text: `#${i} ${'一句很长的台词'.repeat(45)}` };
+    }),
+  }));
+  return {
+    info: { path: 'film.mkv', duration: 9280 },
+    window: { from: 0, to: 9280, duration: 9280 },
+    plan: { sheets: 4, burn: 'index' },
+    sheets,
+  };
+}
+
+test('vision: 清单分页截断或只列一段时，输出上限与索引按图上实际格数', async () => {
+  const images = [1, 2, 3, 4].map((n) => ({ attachmentId: `sha256:${n}` }));
+  for (const options of [{ detail: 'high' }, { detail: 'med', cellRange: [14, 42] }]) {
+    const text = formatForDetail(pagedStoryboard(), options);
+    const listed = text.split('\n').filter((line) => /^cell \d+ \(image \d\) = /.test(line)).length;
+    assert.ok(listed > 0 && listed < 64, `清单只列了部分格子（${listed}）`);
+
+    const llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG });
+    await withDescriptionsForTextModel({ ...ENV, llm }, { text, images });
+    assert.equal(llm.calls[0].maxTokens, Math.min(8192, 512 + 128 * 64), '按图上的 64 格算，不按列出的格子行');
+    const index = llm.calls[0].messages[0].content[0].text.split('\n');
+    assert.equal(index.at(-1), `(${64 - listed} of the 64 cells on the images have no time listed here; `
+      + 'still describe every numbered cell you can see)');
+  }
 });
 
 test('vision: 空描述（含只写到上限、只有空白）判失败，部分描述被截断时保留并注明', async () => {
