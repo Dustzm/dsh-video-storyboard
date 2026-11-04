@@ -196,8 +196,10 @@ test('settings server: 页面 token、API token、保存后不回显 key', async
   assert.equal(result.url, page.url);
 });
 
-test('settings: DSH 设置 tab 的 client bundle 可注册', () => {
+test('settings: DSH 设置 tab 的 client bundle 可注册', (t) => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  // 通办衍生包不挂上游的设置页（配置走插件 Config），见 TONGDO_CHANGES.md。
+  if (!pkg.dsh?.client) return t.skip('package does not ship the upstream settings client');
   assert.equal(pkg.dsh.client.platform, 'web');
   assert.equal(pkg.exports['./client'], './lib/client.js');
   let handoff = null;
