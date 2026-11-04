@@ -35,17 +35,34 @@ const CELLS_PER_SHEET = 16;
 const STRIP_COUNT = /subtitle strip: (\d+) strips/;
 const DEFAULT_STRIPS = 24;
 
+/** 首行的 `grid="64 frames on 4 image(s)"`：图上实际的格数。 */
+const GRID_FRAMES = /\bgrid="(\d+) frames on /;
+
 const cellLines = (text) => text.split('\n').filter((line) => CELL_LINE.test(line));
+const headerLine = (text) => text.split('\n').find((line) => line.startsWith('<storyboard'));
+
+/**
+ * 图上一共几格。清单按字符预算分页截断、或用 cellRange 只列一段时，格子行比图上的格子少，
+ * 但图片照样整张提交，识图模型要描述的是图上全部格子，所以以首行的 grid 为准。
+ * 首行解析不到时返回 0，由调用方退回去数格子行。
+ */
+const gridFrames = (text) => Number(GRID_FRAMES.exec(headerLine(text) ?? '')?.[1] ?? 0);
 
 /**
  * 发给识图模型的索引：只留 `<storyboard …>` 首行与每格的时间行，去掉计划、费用、台词这些它用不到的行。
+ * 清单只列了一部分格子时补一行说明，免得识图模型只描述列出来的那些。
  * 上游格式变了、一行都匹配不到时退回全文，宁可多花 token 也不让识图模型拿不到编号。
  */
 function storyboardIndex(text) {
   const cells = cellLines(text);
   if (cells.length === 0) return text;
-  const header = text.split('\n').find((line) => line.startsWith('<storyboard'));
-  return [...(header ? [header] : []), ...cells].join('\n');
+  const header = headerLine(text);
+  const unlisted = gridFrames(text) - cells.length;
+  const note = unlisted > 0
+    ? [`(${unlisted} of the ${cells.length + unlisted} cells on the images have no time listed here; `
+      + 'still describe every numbered cell you can see)']
+    : [];
+  return [...(header ? [header] : []), ...cells, ...note].join('\n');
 }
 
 /**
@@ -73,7 +90,7 @@ export const STORYBOARD_PROFILE = {
   noun: 'cells',
   cite: 'cite cells by number',
   index: storyboardIndex,
-  units: (value) => cellLines(value.text).length || CELLS_PER_SHEET * value.images.length,
+  units: (value) => gridFrames(value.text) || cellLines(value.text).length || CELLS_PER_SHEET * value.images.length,
 };
 
 /** 字幕条拼图（video_subtitles）：逐条照抄屏幕字幕。 */
