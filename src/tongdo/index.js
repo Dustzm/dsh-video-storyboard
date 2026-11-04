@@ -43,22 +43,25 @@ function localOnly(args) {
 }
 
 /**
+ * 先完成可能失败的异步解析，再设置全局状态和注册工具；全部经 `ctx.effect()`，
+ * 插件卸载或加载中途失败时由宿主按相反顺序撤销。
  * @param {import('@deepseek-ai/cordis').Context} ctx
  * @param {import('./config.js').Config} config
- * @returns {Promise<() => void>}
+ * @returns {Promise<void>}
  */
 export async function apply(ctx, config) {
   const resolved = resolveConfig(config);
   const { defineTool } = await import('@deepseek-ai/dsh-tools');
+  const transcription = await resolveTranscription(ctx, resolved.transcription);
 
-  const disposers = [
-    useMediaBinaries({ ffmpeg: resolved.ffmpegPath, ffprobe: resolved.ffprobePath }),
-    configureHostRuntime({
-      cacheDir: resolved.cacheDir,
-      mediaDir: resolved.mediaDir,
-      transcription: await resolveTranscription(ctx, resolved.transcription),
-    }),
-  ];
+  ctx.effect(
+    () => useMediaBinaries({ ffmpeg: resolved.ffmpegPath, ffprobe: resolved.ffprobePath }),
+    'video-storyboard.binaries',
+  );
+  ctx.effect(
+    () => configureHostRuntime({ cacheDir: resolved.cacheDir, mediaDir: resolved.mediaDir, transcription }),
+    'video-storyboard.runtime',
+  );
 
   /** 出图的工具：结果交给纯文本降级处理，`profile` 决定识图模型怎么描述这类图。 */
   const visual = (spec, run, profile) => defineTool({
@@ -91,11 +94,7 @@ export async function apply(ctx, config) {
     textual(locateSpec(), locate.execute),
     visual(subtitlesSpec(), subtitles.execute, SUBTITLE_PROFILE),
   ];
-  for (const tool of tools) disposers.push(ctx.tools.register(tool));
-
-  return () => {
-    for (const dispose of disposers.reverse()) dispose();
-  };
+  for (const tool of tools) ctx.effect(() => ctx.tools.register(tool), `video-storyboard.tool:${tool.name}`);
 }
 
 /**

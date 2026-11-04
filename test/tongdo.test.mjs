@@ -27,7 +27,28 @@ import { DEFAULT_FFMPEG, DEFAULT_FFPROBE, vendoredMediaDir } from '../src/storyb
 
 const SPECS = { probeSpec, storyboardSpec, zoomSpec, locateSpec, subtitlesSpec };
 
-/** 只记录注册与图片提交的宿主上下文。 */
+/**
+ * 一个作用域：`effect(fn)` 执行 fn 并收下它返回的 disposer，`dispose()` 倒序撤销，模拟插件卸载。
+ * 已撤销的作用域里再登记 effect 时抛错，与 cordis 一致。
+ */
+function fakeScope() {
+  const disposers = [];
+  let disposed = false;
+  return {
+    effect(fn) {
+      if (disposed) throw new Error('cannot create effect on inactive context');
+      const dispose = fn();
+      disposers.push(dispose);
+      return dispose;
+    },
+    dispose() {
+      disposed = true;
+      for (const dispose of disposers.splice(0).reverse()) dispose();
+    },
+  };
+}
+
+/** 只记录注册与图片提交的宿主上下文。`services` 里给了的服务经 `ctx.get()` 取到。 */
 function fakeContext(services = {}) {
   const registered = new Map();
   const saved = [];
@@ -40,20 +61,20 @@ function fakeContext(services = {}) {
     },
     ...services,
   };
-  return {
-    registered,
-    saved,
-    ctx: {
-      tools: {
-        register(tool) {
-          registered.set(tool.name, tool);
-          return () => registered.delete(tool.name);
-        },
+  const scope = fakeScope();
+  const ctx = {
+    tools: {
+      register(tool) {
+        if (registered.has(tool.name)) throw new Error(`tool "${tool.name}" is already registered`);
+        registered.set(tool.name, tool);
+        return () => registered.delete(tool.name);
       },
-      get: (name) => all[name],
-      logger: { warn() {}, error() {} },
     },
+    get: (name) => all[name],
+    effect: (fn) => scope.effect(fn),
+    logger: { warn() {}, error() {} },
   };
+  return { registered, saved, ctx, dispose: () => scope.dispose() };
 }
 
 test('tongdo specs: 宿主 defineTool 接受全部五个工具，且不暴露链接与设置相关参数', () => {
@@ -112,10 +133,11 @@ test('tongdo config: 默认缓存在数据目录下，转写地址带凭据时�
   }
 });
 
-test('tongdo apply: 注册五个工具、托管运行时；dispose 全部撤销', async () => {
+test('tongdo apply: 注册五个工具、托管运行时；卸载时全部撤销', async () => {
   const before = DEFAULT_FFMPEG;
-  const { ctx, registered } = fakeContext();
-  const dispose = await plugin.apply(ctx, { dataDir: '/tmp/tongdo-video-cache', ffmpegPath: '/opt/ff/ffmpeg' });
+  const { ctx, registered, dispose } = fakeContext();
+  assert.equal(await plugin.apply(ctx, { dataDir: '/tmp/tongdo-video-cache', ffmpegPath: '/opt/ff/ffmpeg' }), undefined,
+    'apply 不再自己返回 disposer，撤销交给作用域');
   try {
     assert.equal(registered.size, 5);
     assert.equal(hostRuntime()?.cacheDir, '/tmp/tongdo-video-cache');
@@ -137,14 +159,30 @@ test('tongdo apply: 注册五个工具、托管运行时；dispose 全部撤销'
 });
 
 test('tongdo apply: 没配 ffmpegPath 时按“随包目录 → PATH”解析，不沿用环境变量解析出的值', async () => {
-  const { ctx } = fakeContext();
-  const dispose = await plugin.apply(ctx, { dataDir: '/tmp/tongdo-video-cache' });
+  const { ctx, dispose } = fakeContext();
+  await plugin.apply(ctx, { dataDir: '/tmp/tongdo-video-cache' });
   try {
     const bundled = join(vendoredMediaDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
     assert.ok([bundled, 'ffmpeg'].includes(DEFAULT_FFMPEG), `实得 ${DEFAULT_FFMPEG}`);
   } finally {
     dispose();
   }
+});
+
+test('tongdo apply: 转写密钥解析失败时整体拒绝，不留下全局状态和工具', async () => {
+  const before = DEFAULT_FFMPEG;
+  const { ctx, registered, dispose } = fakeContext();
+  await assert.rejects(
+    plugin.apply(ctx, {
+      ffmpegPath: '/opt/ff/ffmpeg',
+      transcription: { baseUrl: 'http://127.0.0.1:8000/v1', model: 'm', apiKeyEnv: 'ASR_KEY' },
+    }),
+    /needs the credentials service/,
+  );
+  assert.equal(DEFAULT_FFMPEG, before);
+  assert.equal(hostRuntime(), null);
+  assert.equal(registered.size, 0);
+  dispose();
 });
 
 /** 识图模型的默认信息：收图，推理档位从低到高。 */
@@ -390,14 +428,14 @@ test('tongdo e2e: 本地视频出分镜图，台词说明不含安装指引', as
     ]);
     // 代看用的 llm 可在用例中途替换：先让识图模型全部失败，再让它正常描述。
     let llm = fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG, fail: 'overloaded' });
-    const { ctx, registered, saved } = fakeContext({
+    const { ctx, registered, saved, dispose } = fakeContext({
       llm: {
         resolveModelInfo: (...args) => llm.resolveModelInfo(...args),
         listModels: (...args) => llm.listModels(...args),
         stream: (options) => llm.stream(options),
       },
     });
-    const dispose = await plugin.apply(ctx, { dataDir: join(dir, 'cache') });
+    await plugin.apply(ctx, { dataDir: join(dir, 'cache') });
     try {
       if (REQUIRE_BUNDLED) assertBundledLgpl();
       else if (!runnable(DEFAULT_FFMPEG)) return t.skip('plugin ffmpeg not available');
