@@ -127,7 +127,9 @@ test('tongdo specs: 宿主 defineTool 接受全部五个工具，且不暴露链
 
 test('tongdo specs: 链接会被拒收的说法写进 input 与 probe、storyboard 的描述；分镜不再说一镜一帧', () => {
   for (const make of Object.values(SPECS)) assert.match(make().parameters.input.description, /links are refused/);
-  for (const make of [probeSpec, storyboardSpec]) assert.match(make().description, /do not download/);
+  for (const make of [probeSpec, storyboardSpec]) {
+    assert.match(make().description, /do not download it or fetch the site's pages or APIs/);
+  }
   const storyboard = storyboardSpec().description;
   assert.doesNotMatch(storyboard, /one frame per shot/);
   assert.match(storyboard, /a cell can span a cut/);
@@ -180,7 +182,7 @@ test('tongdo apply: 注册五个工具、托管运行时；卸载时全部撤销
     for (const name of ['video_storyboard', 'video_probe']) {
       await assert.rejects(
         registered.get(name).execute({ input: 'https://example.com/v.mp4' }, {}),
-        /only local video files[\s\S]*Do not download it with other tools/,
+        /only local video files can be read\. Reply to the user now[\s\S]*Do not download it with other tools, and do not fetch that site's pages or APIs/,
       );
     }
   } finally {
@@ -374,6 +376,11 @@ test('vision: 纯文本模型时由同路由的识图模型逐格描述，图片
   assert.deepEqual(out.images, VALUE.images);
   assert.match(out.text, /<frames-described-by model="eyes">[\s\S]*cell 1: a test card/);
   assert.match(out.text, /cite cells by number/);
+  assert.match(out.text, /do not check it by sampling pixels, extracting or OCR-ing frames with shell or ffmpeg/);
+  assert.match(out.text, /For a closer look, call video_zoom on that moment/);
+  const strips = await withDescriptionsForTextModel(
+    { ...ENV, llm: fakeLlm({ modalities: ['text'], catalog: EYES_CATALOG }) }, VALUE, SUBTITLE_PROFILE);
+  assert.match(strips.text, /For a closer look, call video_subtitles again on a shorter window/);
 });
 
 test('vision: 代看用识图模型最低的推理档位，输出上限按格数计算', async () => {

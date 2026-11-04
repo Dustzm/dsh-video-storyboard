@@ -70,6 +70,7 @@ function storyboardIndex(text) {
  * @property {string} prompt  给识图模型的指令，末尾接索引
  * @property {'cells' | 'strips'} noun  描述的单位，用在交给当前模型的引导语里
  * @property {string} cite  当前模型引用描述时的方式
+ * @property {string} closer  想看得更细时该调的工具，代替用 shell 或 ffmpeg 自己去读帧
  * @property {(text: string) => string} index  从工具结果文本里取出给识图模型的索引
  * @property {(value: {text: string, images: object[]}) => number} units  要描述的单位数，决定输出上限
  */
@@ -89,6 +90,7 @@ export const STORYBOARD_PROFILE = {
   ].join('\n'),
   noun: 'cells',
   cite: 'cite cells by number',
+  closer: 'call video_zoom on that moment',
   index: storyboardIndex,
   units: (value) => gridFrames(value.text) || cellLines(value.text).length || CELLS_PER_SHEET * value.images.length,
 };
@@ -106,6 +108,7 @@ export const SUBTITLE_PROFILE = {
   ].join('\n'),
   noun: 'strips',
   cite: 'cite strips by time',
+  closer: 'call video_subtitles again on a shorter window',
   // 字幕工具的文字部分只有三行，原样给出即可。
   index: (text) => text,
   units: (value) => Number(STRIP_COUNT.exec(value.text)?.[1] ?? DEFAULT_STRIPS),
@@ -274,7 +277,9 @@ export async function withDescriptionsForTextModel(
       ...value,
       text: `${value.text}\n\n<frames-described-by model="${candidate.model}">The current model cannot see images, `
         + 'so an image-capable model looked at the frames and wrote what it saw. Treat this as a second-hand '
-        + `description: ${profile.cite}, and say so if a detail matters and is marked unclear.\n`
+        + `description: ${profile.cite}, and say so if a detail matters and is marked unclear. Answer from this `
+        + 'description and the text index; do not check it by sampling pixels, extracting or OCR-ing frames with '
+        + `shell or ffmpeg. For a closer look, ${profile.closer}: it is described the same way.\n`
         + `${described.text}${stopped}\n</frames-described-by>`,
     };
   }

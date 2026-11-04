@@ -22,8 +22,8 @@ const INPUT = {
 };
 
 /** 用户只给链接时的引导：交给工具拿到拒收说明，而不是自己去下载。probe 与 storyboard 共用。 */
-const LINK_HINT = 'If the user only gives a video link, do not download it with shell or web tools; pass the link as '
-  + 'input and relay the reply.';
+const LINK_HINT = 'If the user only gives a video link, do not download it or fetch the site\'s pages or APIs with '
+  + 'shell or web tools; pass the link as input and relay the reply.';
 
 /** 从上游参数表里挑出要保留的参数，`input` 换成通办的说明。 */
 function keep(parameters, names) {

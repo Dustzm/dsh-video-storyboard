@@ -36,8 +36,14 @@ export const name = 'tongdo-video-storyboard';
  */
 export const inject = ['tools'];
 
-const LINK_REFUSAL = 'video links are not supported: only local video files can be read. Ask the user to '
-  + 'download the video and attach the file, then call again with its saved path. Do not download it with other tools.';
+/**
+ * 链接拒收说明。实测模型拿到“不要下载”后仍会去抓该网站的接口（取直链、元数据），
+ * 所以把“不访问该网站的页面和接口”写明，并要求这一轮就回复用户。
+ */
+const LINK_REFUSAL = 'video links are not supported: only local video files can be read. Reply to the user now: '
+  + 'ask them to download the video and attach the file, then call again with its saved path. '
+  + 'Do not download it with other tools, and do not fetch that site\'s pages or APIs (web fetch, curl, shell) '
+  + 'to get the video, its stream or its details.';
 
 /** 拒绝链接输入：上游会对链接调用 yt-dlp，通办不开放这条路。 */
 function localOnly(args) {
