@@ -23,7 +23,7 @@ import {
 import { SHEET_IN_CONTEXT_LINE } from '../src/storyboard/format.js';
 import { hostRuntime } from '../src/storyboard/runtime.js';
 import { resolveAsrConfig } from '../src/storyboard/asr.js';
-import { DEFAULT_FFMPEG } from '../src/storyboard/binaries.js';
+import { DEFAULT_FFMPEG, DEFAULT_FFPROBE, vendoredMediaDir } from '../src/storyboard/binaries.js';
 
 const SPECS = { probeSpec, storyboardSpec, zoomSpec, locateSpec, subtitlesSpec };
 
@@ -134,6 +134,17 @@ test('tongdo apply: 注册五个工具、托管运行时；dispose 全部撤销'
   assert.equal(registered.size, 0);
   assert.equal(hostRuntime(), null);
   assert.equal(DEFAULT_FFMPEG, before);
+});
+
+test('tongdo apply: 没配 ffmpegPath 时按“随包目录 → PATH”解析，不沿用环境变量解析出的值', async () => {
+  const { ctx } = fakeContext();
+  const dispose = await plugin.apply(ctx, { dataDir: '/tmp/tongdo-video-cache' });
+  try {
+    const bundled = join(vendoredMediaDir(), process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+    assert.ok([bundled, 'ffmpeg'].includes(DEFAULT_FFMPEG), `实得 ${DEFAULT_FFMPEG}`);
+  } finally {
+    dispose();
+  }
 });
 
 /** 识图模型的默认信息：收图，推理档位从低到高。 */
@@ -342,15 +353,31 @@ test('vision: 字幕条用逐条抄写的提示词，输出上限按条数计算
 
 /** 造测试视频要 lavfi 输入与视频编码器，随包的精简 LGPL 构建没有，所以用 PATH 上的完整 ffmpeg。 */
 const FIXTURE_FFMPEG = process.env.FIXTURE_FFMPEG || 'ffmpeg';
+/**
+ * 打包前核对随包构建：`TONGDO_REQUIRE_BUNDLED_FFMPEG=1` 时 e2e 不再跳过，插件必须用的是随包目录里的
+ * ffmpeg / ffprobe，且构建配置是 LGPL（不开 gpl、nonfree、version3）。
+ */
+const REQUIRE_BUNDLED = process.env.TONGDO_REQUIRE_BUNDLED_FFMPEG === '1';
+
+const runnable = (bin) => spawnSync(bin, ['-version'], { stdio: 'ignore' }).status === 0;
+
+/** 插件当前用的是随包的 LGPL 构建。 */
+function assertBundledLgpl() {
+  for (const bin of [DEFAULT_FFMPEG, DEFAULT_FFPROBE]) {
+    assert.ok(bin.startsWith(vendoredMediaDir()), `插件应使用随包二进制，实得 ${bin}`);
+  }
+  const buildconf = execFileSync(DEFAULT_FFMPEG, ['-hide_banner', '-buildconf'], { encoding: 'utf8' });
+  assert.doesNotMatch(buildconf, /--enable-(gpl|nonfree|version3)\b/);
+  const license = execFileSync(DEFAULT_FFMPEG, ['-hide_banner', '-L'], { encoding: 'utf8' });
+  assert.match(license, /Lesser General Public License/);
+  assert.match(license, /version 2\.1/);
+}
 
 test('tongdo e2e: 本地视频出分镜图，台词说明不含安装指引', async (t) => {
-  try {
-    execFileSync(FIXTURE_FFMPEG, ['-version'], { stdio: 'ignore' });
-    execFileSync(DEFAULT_FFMPEG, ['-version'], { stdio: 'ignore' });
-  } catch {
+  if (!runnable(FIXTURE_FFMPEG)) {
+    if (REQUIRE_BUNDLED) assert.fail(`合成测试素材需要完整的 ffmpeg（FIXTURE_FFMPEG=${FIXTURE_FFMPEG}）`);
     return t.skip('ffmpeg not available');
   }
-  t.diagnostic(`plugin ffmpeg: ${DEFAULT_FFMPEG}`);
   const dir = mkdtempSync(join(tmpdir(), 'tongdo-video-'));
   try {
     const clip = join(dir, 'clip.mp4');
@@ -372,6 +399,9 @@ test('tongdo e2e: 本地视频出分镜图，台词说明不含安装指引', as
     });
     const dispose = await plugin.apply(ctx, { dataDir: join(dir, 'cache') });
     try {
+      if (REQUIRE_BUNDLED) assertBundledLgpl();
+      else if (!runnable(DEFAULT_FFMPEG)) return t.skip('plugin ffmpeg not available');
+      t.diagnostic(`plugin ffmpeg: ${DEFAULT_FFMPEG}`);
       const value = await registered.get('video_storyboard').execute({ input: clip }, {});
       assert.ok(value.images.length >= 1);
       assert.equal(saved[0].mediaType, 'image/png');
