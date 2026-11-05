@@ -3,8 +3,8 @@
   "version": "8.0.1",
   "release": "https://github.com/Dustzm/dsh-video-storyboard/releases/download/ffmpeg-8.0.1-tongdo.1",
   "sha256": {
-    "darwin-arm64": "",
-    "darwin-x64": "",
-    "win32-x64": ""
+    "darwin-arm64": "011b118388cb37b04fdfdd3b85dc906a7aba28b2ae93fa7daa1725440be8185a",
+    "darwin-x64": "2771622daf08be1a6dc16cb7af41eeb8849df0c6826a81ab135229140c5eeeae",
+    "win32-x64": "d1072c4abe1c6ddfdeee89e542f57e797efc10609664acabf7dfbe37a6384b3a"
   }
 }
