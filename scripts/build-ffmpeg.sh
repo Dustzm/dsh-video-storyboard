@@ -98,8 +98,9 @@ cpu = 'x86_64'
 endian = 'little'
 EOF
     meson_cross=(--cross-file "$work/cross.ini")
-    # 静态链接 mingw 运行时与 zlib（libz-mingw-w64-dev），exe 不依赖额外 DLL
-    ff_platform+=(--enable-cross-compile --arch=x86_64 --target-os=mingw32 --cross-prefix="$host-"
+    # 静态链接 mingw 运行时与 zlib（libz-mingw-w64-dev），exe 不依赖额外 DLL。
+    # 带 --cross-prefix 时 configure 默认找 $host-pkg-config，Ubuntu 没有；dav1d 的 .pc 由 PKG_CONFIG_PATH 指向，用宿主的 pkg-config 即可。
+    ff_platform+=(--enable-cross-compile --arch=x86_64 --target-os=mingw32 --cross-prefix="$host-" --pkg-config=pkg-config
       --extra-ldflags=-static --enable-d3d11va --enable-dxva2)
     ;;
 esac
