@@ -49,9 +49,19 @@ const DENIED = new Set(['EACCES', 'EPERM']);
  * @param {{env?:NodeJS.ProcessEnv, platform?:NodeJS.Platform, cwd?:string}} [opts]
  * @returns {Array<{path:string, source:string, explicit:boolean}>}
  */
-/** 随包分发的 ffmpeg 所在目录：`<包根>/vendor/ffmpeg/<platform>-<arch>`。 */
+/**
+ * 把 Electron 归档（`*.asar`）里的路径换成解包目录（`*.asar.unpacked`）里的同一路径。
+ * 归档里的可执行文件不能 spawn（ENOTDIR），桌面安装包把它们解包到旁边的 `.asar.unpacked`；不在归档里的路径原样返回。
+ * @param {string} path
+ * @returns {string}
+ */
+export function unpackedPath(path) {
+  return path.replace(/\.asar(?=[\\/])/, '.asar.unpacked');
+}
+
+/** 随包分发的 ffmpeg 所在目录：`<包根>/vendor/ffmpeg/<platform>-<arch>`，装在 Electron 归档里时指向解包目录。 */
 export function vendoredMediaDir(platform = process.platform, arch = process.arch) {
-  return join(fileURLToPath(new URL('../../vendor/ffmpeg/', import.meta.url)), `${platform}-${arch}`);
+  return unpackedPath(join(fileURLToPath(new URL('../../vendor/ffmpeg/', import.meta.url)), `${platform}-${arch}`));
 }
 
 export function mediaCandidates(name, {

@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 import * as binaries from '../src/storyboard/binaries.js';
 
 const {
-  describeMediaSearch, hostedMediaCandidates, mediaCandidates, resolveMediaBinary, useMediaBinaries, vendoredMediaDir,
+  describeMediaSearch, hostedMediaCandidates, mediaCandidates, resolveMediaBinary, unpackedPath, useMediaBinaries, vendoredMediaDir,
 } = binaries;
 
 function touch(path) {
@@ -117,6 +117,15 @@ test('binaries: 会话工作区里的 tools/ffmpeg/bin 也在候选里', (t) => 
   assert.equal(resolveMediaBinary('ffmpeg', {
     env: { DSH_HOME: home }, platform: 'linux', cwd: workspace,
   }), path);
+});
+
+test('binaries: 装在 Electron 归档里时随包目录指向 .asar.unpacked，其余路径不变', () => {
+  assert.equal(unpackedPath('/App.app/Contents/Resources/app.asar/dsh/node_modules/x/vendor/ffmpeg/darwin-arm64'),
+    '/App.app/Contents/Resources/app.asar.unpacked/dsh/node_modules/x/vendor/ffmpeg/darwin-arm64');
+  assert.equal(unpackedPath('C:\\App\\resources\\app.asar\\dsh\\vendor'), 'C:\\App\\resources\\app.asar.unpacked\\dsh\\vendor');
+  assert.equal(unpackedPath('/home/me/proj/vendor/ffmpeg/linux-x64'), '/home/me/proj/vendor/ffmpeg/linux-x64');
+  assert.equal(unpackedPath('/data/my.asarish/vendor'), '/data/my.asarish/vendor');
+  assert.ok(!vendoredMediaDir().includes('.asar.unpacked'));
 });
 
 test('binaries: 托管候选只有随包目录，不受环境变量影响', () => {
